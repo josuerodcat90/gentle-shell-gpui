@@ -16,16 +16,14 @@ use gentle_core::transcript::format_tokens;
 impl SessionView {
     fn filtered_models(&self, cx: &App) -> Vec<ModelInfo> {
         let query = self.model_search.read(cx).value().trim().to_lowercase();
-        self.models
-            .available
-            .iter()
+        self.ordered_models()
+            .into_iter()
             .filter(|m| {
                 query.is_empty()
                     || m.name.to_lowercase().contains(&query)
                     || m.id.to_lowercase().contains(&query)
                     || m.provider.to_lowercase().contains(&query)
             })
-            .cloned()
             .collect()
     }
 
@@ -44,7 +42,7 @@ impl SessionView {
                 .models
                 .current
                 .as_ref()
-                .and_then(|current| self.models.available.iter().position(|m| m == current))
+                .and_then(|current| self.ordered_models().iter().position(|m| m == current))
                 .unwrap_or(0);
         } else {
             self.focus_composer(window, cx);

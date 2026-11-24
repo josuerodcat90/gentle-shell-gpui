@@ -101,6 +101,63 @@ impl Workspace {
         cx.notify();
     }
 
+    /// The plus in a workspace row opens a two-entry menu independent of
+    /// the row's selection and drag handlers.
+    pub(super) fn open_workspace_add_menu(
+        &mut self,
+        index: usize,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(space) = self.spaces.get(index) else {
+            return;
+        };
+        let name = space.name.clone();
+        let weak = cx.entity().downgrade();
+        self.open_owned_menu(
+            "workspace-add-menu",
+            position,
+            move |menu, window, _| {
+                let mut menu = menu.min_w(rems(160. / 16.).to_pixels(window.rem_size()));
+                for (kind, label) in [
+                    (PaneKind::Agent, "New agent"),
+                    (PaneKind::Terminal, "New terminal"),
+                ] {
+                    let weak = weak.clone();
+                    let name = name.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(label)
+                            .icon(Icon::new(kind.icon()))
+                            .on_click(move |_, window, cx| {
+                                let name = name.clone();
+                                let _ = weak.update(cx, |this, cx| {
+                                    this.close_menu(window, cx);
+                                    // Leave the popup's event dispatch before
+                                    // constructing the session and its backend.
+                                    cx.spawn_in(window, async move |this, cx| {
+                                        let _ = this.update_in(cx, |this, window, cx| {
+                                            if let Some(index) = this
+                                                .spaces
+                                                .iter()
+                                                .position(|space| space.name == name)
+                                            {
+                                                this.open_workspace_tab(index, kind, window, cx);
+                                            }
+                                        });
+                                    })
+                                    .detach();
+                                });
+                            }),
+                    );
+                }
+                menu
+            },
+            window,
+            cx,
+        );
+    }
+
     /// Right-click on a workspace chip, header or row opens this menu.
     pub(super) fn open_workspace_menu(
         &mut self,

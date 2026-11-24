@@ -2,7 +2,7 @@
 //! upgrade`, and how it ended as the app sees it afterwards.
 
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
@@ -160,17 +160,18 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// The "Gentle Shell X is available" offer: Gentle Shell's when it
-    /// reported its status, the npm path's otherwise.
+    /// Keep the offer the running upgrade started with. Otherwise use Gentle
+    /// Shell's reported offer, or the npm path if it did not report status.
     pub(super) fn update_offer(&self, s: &Snapshot) -> Option<UpdateOffer> {
-        match &self.shell_updates.status {
-            Some(status) => offer_from_status(
-                &status.gentle_shell,
-                s.managed,
-                s.skipped_release.as_deref(),
-            ),
-            None => s.update.clone(),
-        }
+        self.shell_update
+            .release_offer(|| match &self.shell_updates.status {
+                Some(status) => offer_from_status(
+                    &status.gentle_shell,
+                    s.managed,
+                    s.skipped_release.as_deref(),
+                ),
+                None => s.update.clone(),
+            })
     }
 }
 
@@ -200,7 +201,7 @@ pub(super) struct UpgradeResult {
     lines: Vec<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum UpgradeChannel {
     Default,
     Main,
@@ -265,49 +266,125 @@ fn upgrade_outcome(
     }
 }
 
+/// The offer accepted when `gentle-shell upgrade` started.
+enum UpgradeTarget {
+    Default(UpdateOffer),
+    Main(String),
+}
+
+impl UpgradeTarget {
+    fn channel(&self) -> UpgradeChannel {
+        match self {
+            Self::Default(_) => UpgradeChannel::Default,
+            Self::Main(_) => UpgradeChannel::Main,
+        }
+    }
+
+    fn version(&self) -> String {
+        match self {
+            Self::Default(offer) => offer.latest.clone(),
+            Self::Main(commit) => commit.clone(),
+        }
+    }
+}
+
 /// Gentle Shell and Pi update progress and output.
 #[derive(Default)]
 pub(super) struct ShellUpdateUiState {
-    upgrading: Option<UpgradeChannel>,
+    upgrading: Option<UpgradeTarget>,
     pub(super) result: Option<UpgradeResult>,
     skip_error: Option<String>,
     pi_running: bool,
     pi_result: Option<(Vec<String>, bool)>,
+    /// When the running upgrade or Pi update started, for its elapsed time.
+    started: Option<Instant>,
+    /// Redraws once a second while one runs, so the elapsed time moves.
+    ticker: Option<Task<()>>,
 }
 
 impl ShellUpdateUiState {
-    /// The new update commands share the package task slot.
+    /// Both Shell upgrade channels and Pi share the package task slot.
     pub(super) fn blocks_packages(&self) -> bool {
-        matches!(self.upgrading, Some(UpgradeChannel::Main)) || self.pi_running
+        self.upgrading.is_some() || self.pi_running
+    }
+
+    fn release_offer(&self, live: impl FnOnce() -> Option<UpdateOffer>) -> Option<UpdateOffer> {
+        match &self.upgrading {
+            Some(UpgradeTarget::Default(offer)) => Some(offer.clone()),
+            _ => live(),
+        }
+    }
+
+    pub(super) fn main_commit<'a>(&'a self, live: Option<&'a str>) -> Option<&'a str> {
+        match &self.upgrading {
+            Some(UpgradeTarget::Main(commit)) => Some(commit),
+            _ => live,
+        }
     }
 }
 
 impl SettingsView {
-    fn update_running(&self) -> bool {
-        self.shell_update.upgrading.is_some() || self.shell_update.pi_running
+    /// Starts the elapsed time of the upgrade or Pi update that just began.
+    fn start_clock(&mut self, cx: &mut Context<Self>) {
+        self.shell_update.started = Some(Instant::now());
+        self.shell_update.ticker = Some(cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let running = this
+                    .update(cx, |this, cx| {
+                        cx.notify();
+                        this.shell_update.blocks_packages()
+                    })
+                    .unwrap_or(false);
+                if !running {
+                    break;
+                }
+            }
+        }));
+    }
+
+    fn stop_clock(&mut self) {
+        self.shell_update.started = None;
+        self.shell_update.ticker = None;
+    }
+
+    /// "`label` 1:42": the busy label with the time since it started.
+    fn busy_label(&self, label: &str) -> String {
+        let seconds = self
+            .shell_update
+            .started
+            .map_or(0, |started| started.elapsed().as_secs());
+        format!("{label} {}", gentle_core::text::elapsed_clock(seconds))
+    }
+
+    /// The shell upgrade on `channel` runs: its button shows the spinner.
+    fn upgrading_on(&self, channel: UpgradeChannel) -> Option<String> {
+        (self
+            .shell_update
+            .upgrading
+            .as_ref()
+            .map(UpgradeTarget::channel)
+            == Some(channel))
+        .then(|| self.busy_label("Updating…"))
     }
 
     fn shell_job_running(&self) -> bool {
-        self.update_running() || self.package.running.is_some()
-    }
-
-    fn upgrade_disabled(&self, channel: UpgradeChannel) -> bool {
-        match channel {
-            UpgradeChannel::Default => self.update_running(),
-            UpgradeChannel::Main => self.shell_job_running(),
-        }
+        self.shell_update.blocks_packages() || self.package.running.is_some()
     }
 
     /// Gentle Shell's own `upgrade` toward `target` (it knows how it was
     /// installed; since 4.7 it moves to its self-contained install), then ask
     /// the launcher the app resolves now which version it runs: that's the
     /// result shown.
-    fn run_upgrade(&mut self, target: String, channel: UpgradeChannel, cx: &mut Context<Self>) {
-        if self.upgrade_disabled(channel) {
+    fn run_upgrade(&mut self, target: UpgradeTarget, cx: &mut Context<Self>) {
+        if self.shell_job_running() {
             return;
         }
-        self.shell_update.upgrading = Some(channel);
+        let channel = target.channel();
+        let target_version = target.version();
+        self.shell_update.upgrading = Some(target);
         self.shell_update.result = None;
+        self.start_clock(cx);
         let cwd = self.cwd.clone();
         self._job = cx.spawn(async move |this, cx| {
             let upgrade = cx
@@ -315,7 +392,9 @@ impl SettingsView {
                 .spawn(async move { super::services::updates::upgrade_shell(&cwd, channel.args()) })
                 .await;
             let _ = this.update(cx, |this, cx| {
+                let target = target_version;
                 this.shell_update.upgrading = None;
+                this.stop_clock();
                 forget_claude_auth();
                 let outcome = upgrade_outcome(
                     upgrade.succeeded,
@@ -357,30 +436,35 @@ impl SettingsView {
     /// terminal's startup prompt offers.
     pub(super) fn render_update(
         &self,
-        offer: crate::features::updates::UpdateOffer,
+        offer: UpdateOffer,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let target = offer.latest.clone();
+        let target = offer.clone();
         let skipped = offer.latest.clone();
         let upgrading = self.shell_update.upgrading.is_some();
+        let busy = self.upgrading_on(UpgradeChannel::Default);
+        let running = busy.is_some();
         update_card(
             "update",
             "Gentle Shell",
             "Runs gentle-shell upgrade. Open agent tabs then restart on the new version and keep their conversations; a tab mid-turn switches when the turn ends.",
             &offer,
-            update_now_button("update", upgrading)
-                .disabled(self.upgrade_disabled(UpgradeChannel::Default))
+            update_now_button("update", busy)
+                .disabled(!running && self.shell_job_running())
                 .on_click(cx.listener(move |this, _, _, cx| {
-                    this.run_upgrade(target.clone(), UpgradeChannel::Default, cx)
+                    this.run_upgrade(UpgradeTarget::Default(target.clone()), cx)
                 })),
             upgrading,
             cx.listener(move |this, _, _, cx| this.skip_update(skipped.clone(), cx)),
             self.shell_update.skip_error.clone(),
         )
+        .when(running, |card| card.child(upgrade_wait_note()))
     }
 
     pub(super) fn render_main_update(&self, commit: &str, cx: &mut Context<Self>) -> Div {
         let target = commit.to_string();
+        let busy = self.upgrading_on(UpgradeChannel::Main);
+        let running = busy.is_some();
         update_card_body(
             format!("Gentle Shell main has a newer commit {commit}"),
             None,
@@ -388,13 +472,14 @@ impl SettingsView {
         )
         .child(
             h_flex().child(
-                update_now_button("update-main", self.shell_update.upgrading.is_some())
-                    .disabled(self.upgrade_disabled(UpgradeChannel::Main))
+                update_now_button("update-main", busy)
+                    .disabled(!running && self.shell_job_running())
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        this.run_upgrade(target.clone(), UpgradeChannel::Main, cx)
+                        this.run_upgrade(UpgradeTarget::Main(target.clone()), cx)
                     })),
             ),
         )
+        .when(running, |card| card.child(upgrade_wait_note()))
     }
 
     fn run_pi_update(&mut self, cx: &mut Context<Self>) {
@@ -403,6 +488,7 @@ impl SettingsView {
         }
         self.shell_update.pi_running = true;
         self.shell_update.pi_result = None;
+        self.start_clock(cx);
         let cwd = self.cwd.clone();
         self._job = cx.spawn(async move |this, cx| {
             let result = cx
@@ -423,6 +509,7 @@ impl SettingsView {
                     });
                 }
                 this.shell_update.pi_running = false;
+                this.stop_clock();
                 this.shell_update.pi_result = Some((lines, failed));
                 this.reload_with(true, cx);
                 cx.notify();
@@ -433,13 +520,14 @@ impl SettingsView {
 
     pub(super) fn render_pi_update(&self, available: bool, cx: &mut Context<Self>) -> Option<Div> {
         let running = self.shell_update.pi_running;
+        let show_button = available || running;
         let output = self.shell_update.pi_result.as_ref();
-        if !available && output.is_none() {
+        if !show_button && output.is_none() {
             return None;
         }
         Some(
             v_flex()
-                .when(available, |d| {
+                .when(show_button, |d| {
                     d.child(
                         h_flex().pt_2().child(
                             Button::new("update-pi")
@@ -447,15 +535,24 @@ impl SettingsView {
                                 .ghost()
                                 .icon(Icon::new(IconName::ArrowUp))
                                 .label(if running {
-                                    "Updating Pi…"
+                                    self.busy_label("Updating Pi…")
                                 } else {
-                                    "Update Pi"
+                                    "Update Pi".to_string()
                                 })
                                 .tooltip("gentle-shell update")
                                 .loading(running)
-                                .disabled(self.shell_job_running())
+                                .disabled(!running && self.shell_job_running())
                                 .on_click(cx.listener(|this, _, _, cx| this.run_pi_update(cx))),
                         ),
+                    )
+                })
+                .when(running, |d| {
+                    d.child(
+                        div()
+                            .pt_1()
+                            .text_xs()
+                            .text_color(ui::muted())
+                            .child("This can take several minutes."),
                     )
                 })
                 .children(output.map(|(lines, failed)| upgrade_output(lines.clone(), *failed))),
@@ -512,9 +609,11 @@ impl SettingsView {
                 "Engram",
                 "Updates Engram the way it was installed (Homebrew, or the release the app downloaded). Your memories stay.",
                 &offer,
-                update_now_button("engram-update", self.engram.upgrading)
-                    .disabled(self.engram.upgrading)
-                    .on_click(cx.listener(|this, _, _, cx| this.run_engram_upgrade(cx))),
+                update_now_button(
+                    "engram-update",
+                    self.engram.upgrading.then(|| "Updating…".to_string()),
+                )
+                .on_click(cx.listener(|this, _, _, cx| this.run_engram_upgrade(cx))),
                 self.engram.upgrading,
                 cx.listener(move |this, _, _, cx| this.skip_engram(skipped.clone(), cx)),
                 self.engram.skip_error.clone(),
@@ -591,12 +690,26 @@ fn update_card(
     .children(error.map(|error| upgrade_output(vec![error], true)))
 }
 
-fn update_now_button(id: &'static str, busy: bool) -> Button {
+/// "Update now", or `busy` with a spinner while the update runs. A loading
+/// button is already inert, so it stays enabled: disabled would dim the
+/// spinner.
+fn update_now_button(id: &'static str, busy: Option<String>) -> Button {
+    let loading = busy.is_some();
     Button::new((id, 0usize))
         .primary()
         .small()
-        .label(if busy { "Updating…" } else { "Update now" })
-        .loading(busy)
+        // `loading` draws its spinner in the icon slot.
+        .when(loading, |button| button.icon(Icon::new(IconName::ArrowUp)))
+        .label(busy.unwrap_or_else(|| "Update now".to_string()))
+        .loading(loading)
+}
+
+/// Shown while Gentle Shell upgrades: it prints nothing until it ends.
+fn upgrade_wait_note() -> Div {
+    div()
+        .text_xs()
+        .text_color(ui::muted())
+        .child("This can take several minutes. Open agent tabs restart when it ends.")
 }
 
 fn update_card_body(title: String, current: Option<&str>, what_it_does: &'static str) -> Div {
@@ -722,7 +835,61 @@ fn upgrade_output(lines: Vec<String>, failed: bool) -> Div {
 
 #[cfg(test)]
 mod tests {
-    use super::{UpgradeChannel, UpgradeOutcome, upgrade_outcome};
+    use super::{
+        ShellUpdateUiState, UpgradeChannel, UpgradeOutcome, UpgradeTarget, upgrade_outcome,
+    };
+    use gentle_core::version::offer_for;
+
+    #[test]
+    fn default_upgrade_blocks_packages_while_it_owns_the_job_slot() {
+        let started = offer_for("4.6.0", "4.7.0", None).expect("test update offer");
+        let mut state = ShellUpdateUiState {
+            upgrading: Some(UpgradeTarget::Default(started)),
+            ..ShellUpdateUiState::default()
+        };
+        assert!(
+            state.blocks_packages(),
+            "a package job would replace the upgrade"
+        );
+
+        state.upgrading = None;
+        assert!(
+            !state.blocks_packages(),
+            "the upgrade released the job slot"
+        );
+    }
+
+    #[test]
+    fn running_default_card_keeps_its_offer_until_completion() {
+        let started = offer_for("4.6.0", "4.7.0", None).expect("test update offer");
+        let newer = || offer_for("4.6.0", "4.7.1", None);
+        let mut state = ShellUpdateUiState {
+            upgrading: Some(UpgradeTarget::Default(started.clone())),
+            ..ShellUpdateUiState::default()
+        };
+        assert_eq!(state.release_offer(|| None), Some(started.clone()));
+        assert_eq!(state.release_offer(newer), Some(started));
+
+        state.upgrading = None;
+        assert_eq!(state.release_offer(|| None), None);
+        assert_eq!(state.release_offer(newer), newer());
+    }
+
+    #[test]
+    fn running_main_card_keeps_its_commit_until_completion() {
+        let started = "05f20b064770";
+        let newer = "2792ce0f011c";
+        let mut state = ShellUpdateUiState {
+            upgrading: Some(UpgradeTarget::Main(started.into())),
+            ..ShellUpdateUiState::default()
+        };
+        assert_eq!(state.main_commit(None), Some(started));
+        assert_eq!(state.main_commit(Some(newer)), Some(started));
+
+        state.upgrading = None;
+        assert_eq!(state.main_commit(None), None);
+        assert_eq!(state.main_commit(Some(newer)), Some(newer));
+    }
 
     #[test]
     fn update_action_main_upgrade_result_follows_the_main_build_that_runs_afterwards() {

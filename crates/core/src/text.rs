@@ -14,9 +14,30 @@ pub fn first_line(text: &str, max_chars: usize) -> String {
     }
 }
 
+/// Elapsed seconds as a clock: `0:07`, `1:42`, `1:02:03`.
+pub fn elapsed_clock(seconds: u64) -> String {
+    let (hours, minutes, secs) = (seconds / 3600, seconds / 60 % 60, seconds % 60);
+    if hours > 0 {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{minutes}:{secs:02}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn elapsed_clock_shows_minutes_then_hours() {
+        assert_eq!(elapsed_clock(0), "0:00");
+        assert_eq!(elapsed_clock(7), "0:07");
+        assert_eq!(elapsed_clock(102), "1:42");
+        assert_eq!(elapsed_clock(3599), "59:59");
+        assert_eq!(elapsed_clock(3600), "1:00:00");
+        assert_eq!(elapsed_clock(3601), "1:00:01");
+        assert_eq!(elapsed_clock(3723), "1:02:03");
+    }
 
     #[test]
     fn first_line_marks_truncation() {

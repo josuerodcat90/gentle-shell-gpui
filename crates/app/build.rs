@@ -3,6 +3,15 @@
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    // GPUI constructs and lays out large element trees on the native UI
+    // thread. Unoptimized Rust frames can exceed the MSVC default 1 MiB
+    // executable stack, especially when an agent is first rendered.
+    // Reserve virtual address space, not 8 MiB of committed memory.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+    {
+        println!("cargo:rustc-link-arg-bin=gentle-shell-gpui=/STACK:8388608");
+    }
     #[cfg(windows)]
     {
         if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {

@@ -687,6 +687,47 @@ pub(crate) fn read_key(path: &Path, key: &str) -> Option<Value> {
     read_settings(path)?.get(key).cloned()
 }
 
+/// The settings file's keys, to change some and write it back: none when the
+/// file doesn't exist yet, an error when it exists but can't be read or isn't
+/// a JSON object, so a save never replaces settings it couldn't read.
+fn settings_to_update(path: &Path) -> std::io::Result<serde_json::Map<String, Value>> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Default::default()),
+        Err(err) => return Err(err),
+    };
+    match serde_json::from_str(&text) {
+        Ok(Value::Object(object)) => Ok(object),
+        Ok(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{} isn't a JSON object", path.display()),
+        )),
+        Err(err) => Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("{}: {err}", path.display()),
+        )),
+    }
+}
+
+/// Write the settings file through a temporary file and a rename, so a crash
+/// mid-write leaves the old file whole.
+fn write_settings(path: &Path, object: serde_json::Map<String, Value>) -> std::io::Result<()> {
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    let text =
+        serde_json::to_string_pretty(&Value::Object(object)).map_err(std::io::Error::other)?;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let temp = dir.join(format!("settings.json.{}-{nanos}.tmp", std::process::id()));
+    let written = std::fs::write(&temp, text + "\n").and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 /// Set `key` in the app's settings file, keeping every other key.
 pub(crate) fn write_key(path: &Path, key: &str, new: Value) -> std::io::Result<()> {
     write_keys(path, [(key, new)])
@@ -698,17 +739,11 @@ fn write_keys<'a>(
     path: &Path,
     keys: impl IntoIterator<Item = (&'a str, Value)>,
 ) -> std::io::Result<()> {
-    let mut value = read_settings(path)
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Default::default()));
+    let mut object = settings_to_update(path)?;
     for (key, new) in keys {
-        value[key] = new;
+        object.insert(key.to_string(), new);
     }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let text = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
-    std::fs::write(path, text + "\n")
+    write_settings(path, object)
 }
 
 /// Set `theme` in the app's settings file, keeping every other key.
@@ -821,10 +856,7 @@ pub fn read_fonts(path: &Path) -> Fonts {
 /// other key. Defaults remove their keys, and so does the interface's
 /// legacy size (it has no size of its own).
 pub fn write_fonts(path: &Path, fonts: &Fonts) -> std::io::Result<()> {
-    let mut value = read_settings(path)
-        .filter(Value::is_object)
-        .unwrap_or_else(|| Value::Object(Default::default()));
-    let object = value.as_object_mut().expect("filtered to an object");
+    let mut object = settings_to_update(path)?;
     for slot in FontSlot::ALL {
         match fonts.get(slot).and_then(|f| fonts::normalize(f)) {
             Some(name) => object.insert(slot.key().to_string(), Value::String(name)),
@@ -838,11 +870,7 @@ pub fn write_fonts(path: &Path, fonts: &Fonts) -> std::io::Result<()> {
             None => object.remove(slot.size_key()),
         };
     }
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let text = serde_json::to_string_pretty(&value).map_err(std::io::Error::other)?;
-    std::fs::write(path, text + "\n")
+    write_settings(path, object)
 }
 
 // ── Active theme ───────────────────────────────────────────────────────────
@@ -1691,6 +1719,57 @@ mod tests {
         assert_eq!(value["interfaceScale"], 1.25);
         std::fs::write(&path, r#"{"interfaceScale": "big"}"#).unwrap();
         assert_eq!(read_interface_size(&path), None);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A settings file that doesn't parse (a hand edit with a trailing comma)
+    /// is left as it is: the save fails instead of replacing every setting
+    /// with the one being written.
+    #[test]
+    fn saving_a_setting_leaves_a_settings_file_that_does_not_parse() {
+        let dir = scratch("unparseable");
+        let path = dir.join("settings.json");
+        let before = "{\n  \"theme\": \"Clay\",\n  \"onboarding\": {\"done\": true},\n}\n";
+        std::fs::write(&path, before).unwrap();
+
+        let glass = Glass {
+            transparency: 0.5,
+            blur: 0.5,
+            opacity: 0.5,
+        };
+        assert!(write_glass(&path, glass).is_err());
+        assert!(write_fonts(&path, &Fonts::default()).is_err());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// Valid JSON that isn't an object is left as it is too.
+    #[test]
+    fn saving_a_setting_leaves_a_settings_file_that_is_not_an_object() {
+        let dir = scratch("not-object");
+        let path = dir.join("settings.json");
+        std::fs::write(&path, "[\"theme\"]\n").unwrap();
+
+        assert!(write_persisted(&path, "Nord").is_err());
+
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "[\"theme\"]\n");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// A save leaves no temporary file next to the settings.
+    #[test]
+    fn saving_a_setting_leaves_only_the_settings_file() {
+        let dir = scratch("only-settings");
+        let path = dir.join("settings.json");
+        write_persisted(&path, "Nord").unwrap();
+        write_fonts(&path, &Fonts::default()).unwrap();
+
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, ["settings.json"]);
         let _ = std::fs::remove_dir_all(dir);
     }
 

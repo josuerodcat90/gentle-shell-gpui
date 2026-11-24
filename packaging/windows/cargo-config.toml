@@ -1,0 +1,4 @@
+# Windows distribution builds only. Use an explicit --target so host
+# build scripts and proc macros keep their normal CRT configuration.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

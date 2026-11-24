@@ -16,8 +16,8 @@ use gpui_kit::component::{ActiveTheme as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::{
     Animation, AnimationElement, AnimationExt as _, App, BoxShadow, Div, ElementId, EntityId,
-    FontWeight, Hsla, IntoElement, ParentElement as _, Pixels, Rems, SharedString, Stateful,
-    Styled, Window, canvas, div, ease_out_quint, point, px, rems, rgb,
+    FontWeight, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Pixels, Rems,
+    SharedString, Stateful, Styled, Window, canvas, div, ease_out_quint, point, px, rems, rgb,
 };
 
 use crate::shared::themes::{self, Glass, Theme, mix};
@@ -618,6 +618,31 @@ pub fn chip(text: impl Into<SharedString>, color: Hsla) -> Div {
         .border_1()
         .border_color(color.opacity(0.22))
         .child(text.into())
+}
+
+/// A vertical resize handle for sidebar edges, as wide as the window body's
+/// `gap_1p5` (6 px at 100 %) so it fills the gap beside a sidebar. It shows no
+/// visible line until hover, when a 2×40 px pill lights up in the accent color.
+pub fn resize_handle(id: impl Into<ElementId>) -> Stateful<Div> {
+    div()
+        .id(id.into())
+        .group("resize-handle")
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(rems(6. / 16.))
+        .h_full()
+        .cursor_col_resize()
+        .child(
+            div()
+                .w(px(2.))
+                .h(px(40.))
+                .rounded_full()
+                .bg(border_strong())
+                .opacity(0.0)
+                .group_hover("resize-handle", |s| s.opacity(1.0).bg(petal())),
+        )
 }
 
 /// A provider's dot color in model pickers: stable per provider name, from

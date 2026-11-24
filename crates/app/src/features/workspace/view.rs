@@ -830,13 +830,13 @@ impl Workspace {
                 .gap_3()
                 .text_sm()
                 .text_color(ui::muted())
-                .child("No tabs in this workspace")
+                .child("No agents in this workspace yet")
                 .child(
                     Button::new("empty-new-tab")
                         .primary()
                         .small()
                         .icon(Icon::new(IconName::Plus))
-                        .label("New agent tab")
+                        .label("Open agent")
                         .on_click(
                             cx.listener(|this, _, window, cx| this.on_new_tab(&NewTab, window, cx)),
                         ),

@@ -2,21 +2,22 @@
 //! Desktop channel: the Sessions browser (`list_sessions`, `switch_session`),
 //! Usage › Local stats (`get_usage_stats`), Configuration's update status
 //! (`get_update_status`), the Profiles screen's agent list and Pi default
-//! orchestrator (`list_agent_definitions`), Gentle Shell's own status
-//! (`get_status`), background-subagents policy (`get_background_subagents`,
+//! orchestrator and the model pickers' default model
+//! (`list_agent_definitions`), Gentle Shell's own status (`get_status`),
+//! background-subagents policy (`get_background_subagents`,
 //! `set_background_subagents`) and sign-ins (`get_auth_status`), and the
 //! tab's own credentials reload (`reload_credentials`). Each method is used
 //! only when `capabilities` advertises it; otherwise the caller keeps its own
 //! path (session files, the stats file scan, the npm registry, the agent
 //! files and Pi's `settings.json`, no status, the policy files and
-//! `/gentle:background-subagents`, `auth.json`, a tab restart) and nothing is
-//! sent.
+//! `/gentle:background-subagents`, `auth.json`, a tab restart; the model
+//! pickers omit the default) and nothing is sent.
 //!
 //! Requests wait for the shared slot in a queue, like the config stores; each
 //! is answered once, as an outcome for its ticket that the screen takes.
 //! A `session_switching` answer means a switch was in flight: nothing was
-//! done, so the request is queued again (a few times) instead of failing.
-//! These methods emit no event of their own.
+//! done, so screen requests are queued again (a few times) instead of failing.
+//! The default-model read never retries. These methods emit no event of their own.
 
 use std::collections::VecDeque;
 
@@ -72,6 +73,7 @@ pub(crate) enum ReadRequest {
     UpdateStatus {
         refresh: bool,
     },
+    ModelDefault,
     /// The agent definitions and Pi's default orchestrator.
     AgentDefinitions,
     /// The facts `/gentle:status` prints, with its severity.
@@ -97,6 +99,7 @@ impl ReadRequest {
             Self::SwitchSession { .. } => DesktopMethod::SwitchSession,
             Self::UsageStats { .. } => DesktopMethod::GetUsageStats,
             Self::UpdateStatus { .. } => DesktopMethod::GetUpdateStatus,
+            Self::ModelDefault => DesktopMethod::ListAgentDefinitions,
             Self::AgentDefinitions => DesktopMethod::ListAgentDefinitions,
             Self::Status => DesktopMethod::GetStatus,
             Self::BackgroundSubagents => DesktopMethod::GetBackgroundSubagents,
@@ -119,6 +122,7 @@ impl ReadRequest {
             Self::UpdateStatus { refresh } => {
                 session.issue_get_update_status(refresh.then_some(true))
             }
+            Self::ModelDefault => session.issue(DesktopMethod::ListAgentDefinitions),
             Self::AgentDefinitions => session.issue(DesktopMethod::ListAgentDefinitions),
             Self::Status => session.issue(DesktopMethod::GetStatus),
             Self::BackgroundSubagents => session.issue(DesktopMethod::GetBackgroundSubagents),
@@ -184,6 +188,7 @@ pub(crate) enum ReadOutcome {
     Switched(SwitchSessionResult),
     UsageStats(UsageStats),
     UpdateStatus(UpdateStatus),
+    ModelDefault(Option<String>),
     AgentDefinitions(AgentDefinitions),
     Status(ShellStatus),
     BackgroundSubagents(BackgroundSubagents),
@@ -395,6 +400,14 @@ impl Reads {
             ReadRequest::UpdateStatus { .. } => {
                 response.update_status().map(ReadOutcome::UpdateStatus)
             }
+            ReadRequest::ModelDefault => response.agent_definitions().map(|definitions| {
+                ReadOutcome::ModelDefault(
+                    definitions
+                        .default_orchestrator
+                        .route()
+                        .map(|(model, _)| model.to_owned()),
+                )
+            }),
             ReadRequest::AgentDefinitions => response
                 .agent_definitions()
                 .map(ReadOutcome::AgentDefinitions),
@@ -414,7 +427,9 @@ impl Reads {
             Ok(outcome) => outcome,
             Err(DesktopRpcError::RemoteError(info)) => {
                 let code = info.kind();
-                if code.is_some_and(DesktopErrorCode::is_retryable) && queued.retries < MAX_RETRIES
+                if queued.request != ReadRequest::ModelDefault
+                    && code.is_some_and(DesktopErrorCode::is_retryable)
+                    && queued.retries < MAX_RETRIES
                 {
                     // Nothing was done: ask again once the switch answered.
                     queued.retries += 1;
@@ -426,6 +441,14 @@ impl Reads {
                     };
                 }
                 if code == Some(DesktopErrorCode::UnsupportedMethod) {
+                    if queued.request == ReadRequest::ModelDefault
+                        && let Some(capabilities) = &mut self.capabilities
+                    {
+                        // Treat a refused advertisement like a missing one until reset.
+                        capabilities
+                            .methods
+                            .retain(|name| name != queued.request.method().as_str());
+                    }
                     ReadOutcome::Failed(ReadFailure::Unsupported)
                 } else {
                     ReadOutcome::Failed(ReadFailure::Refused {
@@ -526,9 +549,19 @@ mod tests {
         }))
     }
 
-    /// A tab whose probe landed with `methods` advertised.
-    fn probed(methods: &[&str]) -> Desktop {
-        let mut desktop = Desktop::new();
+    /// A `list_agent_definitions` answer with `orchestrator` as the default.
+    fn definitions(orchestrator: Value) -> Value {
+        json!({
+            "agents": [],
+            "truncated": false,
+            "problems": { "invalid": 0, "notices": 0 },
+            "subagentDefaults": { "model": "p/subagent", "thinking": null, "mode": "task" },
+            "defaultOrchestrator": orchestrator
+        })
+    }
+
+    /// Land the probe with `methods` advertised.
+    fn probe(desktop: &mut Desktop, methods: &[&str]) {
         let probe = desktop.ready(true);
         let id = probe.sends[0].request.request_id().to_string();
         let snapshot = desktop.ui(&ok(
@@ -543,6 +576,11 @@ mod tests {
             &id,
             json!({"schema": SCHEMA, "sequence": 0, "state": {}}),
         ));
+    }
+
+    fn probed(methods: &[&str]) -> Desktop {
+        let mut desktop = Desktop::new();
+        probe(&mut desktop, methods);
         desktop
     }
 
@@ -606,6 +644,129 @@ mod tests {
             main_shell().reads_support(DesktopMethod::ListSessions),
             ReadSupport::Rpc
         );
+    }
+
+    #[test]
+    fn model_default_waits_for_the_probe_and_refreshes_on_request() {
+        let mut desktop = Desktop::new();
+        desktop.request_model_default();
+        assert_eq!(desktop.sync_model_default(), None);
+        assert!(desktop.reads_pump().sends.is_empty());
+
+        probe(
+            &mut desktop,
+            &["capabilities", "get_snapshot", "list_agent_definitions"],
+        );
+        assert_eq!(desktop.sync_model_default(), None);
+        let (id, payload) = sent(&desktop.reads_pump().sends);
+        assert_eq!(payload["method"], "list_agent_definitions");
+        assert_eq!(payload["params"], json!({}));
+        let _ = desktop.reads_apply(&ok(
+            &id,
+            definitions(json!({"status": "set", "model": "p/original", "thinking": null})),
+        ));
+        assert_eq!(
+            desktop.sync_model_default(),
+            Some(Some("p/original".into()))
+        );
+        assert!(desktop.reads_pump().sends.is_empty());
+
+        desktop.request_model_default();
+        assert_eq!(desktop.sync_model_default(), None);
+        let (refresh, _) = sent(&desktop.reads_pump().sends);
+        assert_ne!(id, refresh);
+        let _ = desktop.reads_apply(&ok(
+            &refresh,
+            definitions(json!({"status": "set", "model": "p/new", "thinking": null})),
+        ));
+        assert_eq!(desktop.sync_model_default(), Some(Some("p/new".into())));
+        assert!(desktop.reads_pump().sends.is_empty());
+    }
+
+    #[test]
+    fn model_default_errors_never_retry_and_unsupported_stays_off() {
+        let mut legacy = probed(&RELEASE_METHODS);
+        legacy.request_model_default();
+        assert_eq!(legacy.sync_model_default(), Some(None));
+        assert!(legacy.reads_pump().sends.is_empty());
+
+        let mut desktop = probed(&["capabilities", "get_snapshot", "list_agent_definitions"]);
+        for code in [
+            "session_switching",
+            "agent_definitions_unavailable",
+            "unsupported_method",
+        ] {
+            desktop.request_model_default();
+            assert_eq!(desktop.sync_model_default(), None);
+            let (id, _) = sent(&desktop.reads_pump().sends);
+            let applied = desktop.reads_apply(&error(&id, code));
+            assert!(!applied.retry, "{code}");
+            assert_eq!(desktop.sync_model_default(), Some(None));
+            assert!(desktop.reads_pump().sends.is_empty());
+        }
+        desktop.request_model_default();
+        assert_eq!(desktop.sync_model_default(), Some(None));
+        assert!(desktop.reads_pump().sends.is_empty());
+    }
+
+    #[test]
+    fn model_default_timeout_clears_without_retrying() {
+        let mut desktop = probed(&["capabilities", "get_snapshot", "list_agent_definitions"]);
+        desktop.request_model_default();
+        assert_eq!(desktop.sync_model_default(), None);
+        let request = desktop.reads_pump().sends.remove(0);
+        let expired = desktop.reads_expire(request.generation);
+        assert!(!expired.retry);
+        assert_eq!(desktop.sync_model_default(), Some(None));
+        assert!(desktop.reads_pump().sends.is_empty());
+        assert!(desktop.session().pending().is_none());
+    }
+
+    #[test]
+    fn timed_out_model_default_cannot_be_restored_by_a_late_reply() {
+        let mut desktop = probed(&["capabilities", "get_snapshot", "list_agent_definitions"]);
+        desktop.request_model_default();
+        assert_eq!(desktop.sync_model_default(), None);
+        let send = desktop.reads_pump().sends.remove(0);
+        let id = send.request.request_id().to_owned();
+
+        assert!(!desktop.reads_expire(send.generation).retry);
+        assert_eq!(desktop.sync_model_default(), Some(None));
+
+        let _ = desktop.reads_apply(&ok(
+            &id,
+            definitions(json!({"status": "set", "model": "p/late"})),
+        ));
+        assert_eq!(desktop.sync_model_default(), None);
+        assert!(desktop.reads_pump().sends.is_empty());
+    }
+
+    #[test]
+    fn model_default_ignores_a_replaced_backends_response() {
+        let methods = ["capabilities", "get_snapshot", "list_agent_definitions"];
+        let mut desktop = probed(&methods);
+        desktop.request_model_default();
+        assert_eq!(desktop.sync_model_default(), None);
+        let old = desktop.reads_pump().sends;
+        let (old_id, _) = sent(&old);
+        desktop.reset();
+
+        desktop.request_model_default();
+        probe(&mut desktop, &methods);
+        assert_eq!(desktop.sync_model_default(), None);
+        let (new_id, _) = sent(&desktop.reads_pump().sends);
+        assert_ne!(old_id, new_id);
+        let _ = desktop.reads_expire(old[0].generation);
+        let _ = desktop.reads_apply(&ok(
+            &old_id,
+            definitions(json!({"status": "set", "model": "p/old", "thinking": null})),
+        ));
+        assert_eq!(desktop.sync_model_default(), None);
+        let _ = desktop.reads_apply(&ok(
+            &new_id,
+            definitions(json!({"status": "unset", "model": null, "thinking": null})),
+        ));
+        assert_eq!(desktop.sync_model_default(), Some(None));
     }
 
     #[test]

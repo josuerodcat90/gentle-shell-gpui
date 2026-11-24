@@ -84,7 +84,7 @@ jobs:
       # merged to main can reach it (accepted in .github/zizmor.yml).
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          shared-key: dist-${{ matrix.target }}
+          shared-key: dist-${{ matrix.target }}${{ matrix.target == 'x86_64-pc-windows-msvc' && '-static-crt-v1' || '' }}
           save-if: false
       # Ubuntu's mirror for GitHub runners can crawl (65 MB took over 10 minutes),
       # so the downloaded .debs are cached and only fetched once per image.
@@ -123,9 +123,10 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          cargo build --profile dist --locked -p gentle-shell-gpui --target "${{ matrix.target }}"
+          cargo --config packaging/windows/cargo-config.toml build --profile dist --locked -p gentle-shell-gpui --target "${{ matrix.target }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $exe = "target/${{ matrix.target }}/dist/gentle-shell-gpui.exe"
+          & ./packaging/windows/check-runtime.ps1 -Exe $exe
           New-Item -ItemType Directory -Force dist | Out-Null
           # The zip is what the in-app updater downloads.
           Compress-Archive -Force -Path $exe `

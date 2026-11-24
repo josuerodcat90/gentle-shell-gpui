@@ -23,7 +23,7 @@ pub use pins::{PinEval, PinRead, PinStatus, evaluate_pin, parse_pin, pin_notes, 
 pub use routing::{
     ModelChoice, ORCHESTRATOR, RouteEntry, Routing, THINKING_LEVELS, clamp_level, format_selection,
     is_review_role, is_thinking_level, normalize_entry, normalize_model_id, normalize_routing,
-    normalized_json, parse_model_ref,
+    normalized_json, parse_model_ref, sort_like_shell,
 };
 pub use store::{
     Drops, OrchestratorMode, PROFILE_EXPORT_FILE, ProfileExport, ProfilesFile, bootstrap_profiles,

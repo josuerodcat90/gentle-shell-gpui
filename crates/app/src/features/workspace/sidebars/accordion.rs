@@ -17,26 +17,17 @@ impl Workspace {
             .px_2()
             .pb_2()
             .gap_px()
-            .child(Self::section_row("Workspaces"));
+            .child(self.workspace_section(cx));
+        let query = self.tab_search.read(cx).value().trim().to_lowercase();
         let mut matches = 0;
         for space in self.sidebar_spaces() {
             let tabs = self.visible_tabs(space.index, cx);
-            if searching && tabs.is_empty() {
+            if searching && tabs.is_empty() && !space.name.to_lowercase().contains(&query) {
                 continue;
             }
-            matches += tabs.len();
+            matches += 1;
             let open = searching || self.sidebar_space_open(space.index);
-            let index = space.index;
-            list = list.child(
-                self.space_row(&space, Some(open), "accordion-space", cx)
-                    .on_click(cx.listener(move |this, event: &ClickEvent, window, cx| {
-                        if event.click_count() >= 2 {
-                            this.switch_workspace(index, window, cx);
-                        } else {
-                            this.toggle_sidebar_space(index, cx);
-                        }
-                    })),
-            );
+            list = list.child(self.space_row(&space, Some(open), "accordion-space", cx));
             if !open {
                 continue;
             }
@@ -49,15 +40,18 @@ impl Workspace {
                 .border_color(ui::border().opacity(0.6))
                 .gap_px();
             if tabs.is_empty() {
-                guide = guide.child(Self::quiet_row("No tabs yet", INDENT - 14.));
+                guide = guide.child(Self::quiet_row("No sessions yet", INDENT - 14.));
             }
             for tab in &tabs {
                 guide = guide.child(self.tab_row(tab, INDENT - 14., cx));
+                if tab.panes > 1 {
+                    guide = guide.children(self.split_sidebar_rows(tab, cx));
+                }
             }
             list = list.child(guide);
         }
         if searching && matches == 0 {
-            list = list.child(Self::quiet_row("No matching tabs", 0.));
+            list = list.child(Self::quiet_row("No matching workspaces or sessions", 0.));
         }
         let actions = self.header_actions(cx);
         v_flex()
@@ -65,6 +59,7 @@ impl Workspace {
             .child(self.sidebar_header(actions, cx))
             .child(self.sidebar_search())
             .child(list)
+            .child(self.global_activity_row())
             .child(self.new_tab_tiles(("sidebar-add-agent", "sidebar-add-terminal"), cx))
             .into_any_element()
     }

@@ -90,10 +90,12 @@ impl ModelInfo {
 /// The session's model, the ones it can switch to, and its thinking level.
 pub(super) struct Models {
     pub(super) current: Option<ModelInfo>,
+    /// Agent-home default reported by this backend's Desktop channel.
+    pub(super) default: Option<String>,
     pub(super) available: Vec<ModelInfo>,
     /// `get_available_models` answered since the backend started.
     pub(super) loaded: bool,
-    /// Bumped whenever `available` is replaced.
+    /// Bumped whenever `available` is replaced or the default changes.
     pub(super) rev: u64,
     pub(super) thinking: String,
     /// What the current model accepts (`get_available_thinking_levels`), low
@@ -105,6 +107,7 @@ impl Default for Models {
     fn default() -> Self {
         Self {
             current: None,
+            default: None,
             available: Vec::new(),
             loaded: false,
             rev: 0,
@@ -284,7 +287,7 @@ pub(in crate::features::session) mod desktop {
     #[cfg(test)]
     mod live_tests;
     pub(in crate::features::session) mod output;
-    /// The screens' one-shot reads, in `state/desktop/reads.rs`.
+    /// One-shot reads, in `state/desktop/reads.rs`.
     pub(in crate::features::session) mod reads;
     pub(in crate::features::session) mod review;
     pub(in crate::features::session) mod sections;
@@ -393,8 +396,11 @@ pub(in crate::features::session) mod desktop {
         design: design::Design,
         /// The config stores the Profiles screen reads and writes.
         config: config::Config,
-        /// The screens' one-shot reads (sessions, stats, update status).
+        /// The screens' one-shot reads and the model pickers' default.
         reads: reads::Reads,
+        /// A refresh is owed when capability negotiation or an earlier read finishes.
+        model_default_requested: bool,
+        model_default_read: Option<reads::ReadTicket>,
         /// Gentle Shell's session state (`session_snapshot`), when offered.
         sections: sections::Sections,
         /// The snapshot in flight asked for [`sections::SECTIONS`].
@@ -427,6 +433,8 @@ pub(in crate::features::session) mod desktop {
                 design: design::Design::new(),
                 config: config::Config::default(),
                 reads: reads::Reads::default(),
+                model_default_requested: false,
+                model_default_read: None,
                 sections: sections::Sections::default(),
                 snapshot_sections: false,
                 output: output::Output::default(),
@@ -451,6 +459,8 @@ pub(in crate::features::session) mod desktop {
             self.design.reset(&mut self.session);
             self.config.reset(&mut self.session);
             self.reads.reset();
+            self.model_default_requested = false;
+            self.model_default_read = None;
             self.sections.reset();
             self.snapshot_sections = false;
             self.output.reset();
@@ -1042,6 +1052,45 @@ pub(in crate::features::session) mod desktop {
             handled: bool,
         ) -> reads::Applied {
             self.reads.outer(&mut self.session, generation, handled)
+        }
+
+        /// Ask at the next queue pump, once the capability is known.
+        pub(in crate::features::session) fn request_model_default(&mut self) {
+            self.model_default_requested = true;
+        }
+
+        /// Collect a finished read, or queue an owed one. `Some(None)` clears
+        /// the default; `None` means there is no result to apply yet.
+        pub(in crate::features::session) fn sync_model_default(
+            &mut self,
+        ) -> Option<Option<String>> {
+            if let Some(ticket) = self.model_default_read {
+                let outcome = self.reads.take(ticket)?;
+                self.model_default_read = None;
+                if !self.model_default_requested {
+                    return Some(match outcome {
+                        reads::ReadOutcome::ModelDefault(model) => model,
+                        _ => None,
+                    });
+                }
+                // A refresh asked for after this read started supersedes it.
+            }
+            if !self.model_default_requested {
+                return None;
+            }
+            match self.reads_support(DesktopMethod::ListAgentDefinitions) {
+                reads::ReadSupport::NotReady => None,
+                reads::ReadSupport::Legacy => {
+                    self.model_default_requested = false;
+                    Some(None)
+                }
+                reads::ReadSupport::Rpc => {
+                    self.model_default_requested = false;
+                    self.model_default_read =
+                        self.reads_enqueue(reads::ReadRequest::ModelDefault).ok();
+                    self.model_default_read.is_none().then_some(None)
+                }
+            }
         }
 
         /// The answer to `ticket`, once, if it arrived.

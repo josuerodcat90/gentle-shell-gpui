@@ -68,6 +68,7 @@ impl SessionView {
                 // Nothing the dead backend said or numbered applies any more.
                 self.desktop.reset();
                 self.permission.reset(self.desktop.session());
+                self.set_model_default(None, cx);
             }
         }
     }

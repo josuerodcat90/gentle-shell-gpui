@@ -1633,30 +1633,43 @@ mod managed_tests {
     #[test]
     fn diagnostics_survive_a_version_probe_timing_out() {
         let layout = layout("version-timeout");
-        let path = layout
-            .dir
-            .join(if cfg!(windows) { "slow.cmd" } else { "slow" });
-        let script = if cfg!(windows) {
-            "@echo off\r\necho broken before timeout 1>&2\r\n:loop\r\ngoto loop\r\n"
+        // Sleep in the process we probe instead of busy-spinning or leaving
+        // a separate sleeper behind when output_within kills the child.
+        let (program, args) = if cfg!(windows) {
+            (
+                PathBuf::from("powershell.exe"),
+                vec![
+                    "-NoProfile".into(),
+                    "-NonInteractive".into(),
+                    "-Command".into(),
+                    // -Command consumes the remaining arguments, including
+                    // the --version appended by launcher_command.
+                    "[Console]::Error.WriteLine('broken before timeout'); Start-Sleep -Seconds 30; #"
+                        .into(),
+                ],
+            )
         } else {
-            "#!/bin/sh\necho 'broken before timeout' >&2\nwhile :; do :; done\n"
+            (
+                PathBuf::from("/bin/sh"),
+                vec![
+                    "-c".into(),
+                    "echo 'broken before timeout' >&2; exec sleep 30".into(),
+                ],
+            )
         };
-        std::fs::write(&path, script).unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
         let spec = LaunchSpec {
-            program: path.clone(),
-            args: Vec::new(),
+            launcher: program.clone(),
+            program,
+            args,
             cwd: layout.dir.clone(),
             env: Vec::new(),
-            launcher: path,
             bundled: None,
         };
+        // Allow for shell startup and scheduling under load. The child
+        // sleeps much longer than this test-only deadline, so we still
+        // exercise the timeout path.
         assert_eq!(
-            version_stderr_within(&spec, Duration::from_millis(300))
+            version_stderr_within(&spec, Duration::from_secs(5))
                 .as_deref()
                 .map(str::trim),
             Some("broken before timeout")

@@ -32,7 +32,9 @@ fn backend_updates_section(
     cx: &mut Context<SettingsView>,
 ) -> Div {
     let status = view.shell_updates.status.as_ref();
-    let main = status.and_then(|status| main_update_target(&status.gentle_shell, snapshot.managed));
+    let main = view.shell_update.main_commit(
+        status.and_then(|status| main_update_target(&status.gentle_shell, snapshot.managed)),
+    );
     let pi = status.is_some_and(|status| pi_update_available(status, snapshot.managed));
     section(IconName::RefreshCw, "Gentle Shell and Engram")
         .child(row("Versions", snapshot.versions.join(" · ")))

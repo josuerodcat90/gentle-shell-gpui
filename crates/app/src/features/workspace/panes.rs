@@ -85,18 +85,17 @@ impl Workspace {
         let rem = |n: f32| f32::from(rems(n / 16.).to_pixels(window.rem_size()));
         // Vertical tabs and Files are separate columns. Keep pane hit-testing
         // and split-size calculations aligned with the actual rendered width.
-        let left = if self.tab_layout == TabLayout::Vertical {
-            rem(SIDEBAR_WIDTH) + 6.
-        } else {
-            0.
+        let window_px =
+            f32::from(window.viewport_size().width) / (f32::from(window.rem_size()) / 16.);
+        let now = std::time::Instant::now();
+        let occupied = |side| {
+            let (width, fraction) = self.sidebar_geometry(side, window_px, now);
+            rem((width + 6.) * fraction)
         };
-        let right = if self.sidebar_visible && self.sidebar.is_some() {
-            rem(SIDEBAR_WIDTH) + 6.
-        } else {
-            0.
-        };
-        let w = (f32::from(viewport.width) - 12. - left - right).max(0.);
-        let h = f32::from(viewport.height) - rem(super::render::TITLE_BAR_HEIGHT) - 6.;
+        let w =
+            (f32::from(viewport.width) - rem(12.) - occupied(Side::Tabs) - occupied(Side::Files))
+                .max(0.);
+        let h = f32::from(viewport.height) - rem(super::render::TITLE_BAR_HEIGHT + 6.);
         let mut out = Vec::new();
         if let Some(tree) = self.tab().and_then(|t| t.built_tree()) {
             leaf_sizes(tree, w, h, &mut out);
@@ -421,7 +420,9 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) -> Option<PaneId> {
         match kind {
-            PaneKind::Agent => Some(self.new_agent_pane(target, prompt, resume, true, window, cx)),
+            // Register the pane before starting its backend. Activation
+            // starts shown agents after the new tab has been inserted.
+            PaneKind::Agent => Some(self.new_agent_pane(target, prompt, resume, false, window, cx)),
             PaneKind::Terminal
             | PaneKind::File
             | PaneKind::History
@@ -533,20 +534,11 @@ impl Workspace {
             id
         });
         let Some(tree) = tree else {
-            // Nothing in this tab could be restored; drop it and start fresh.
+            // Nothing could be restored; keep the workspace empty if this
+            // was its last tab, rather than silently launching another agent.
             self.spaces[space_index].tabs.remove(tab_index);
+            tab_panel::after_removal(&mut self.spaces[space_index], tab_index);
             self.prune_tab_selection(cx);
-            let len = self.spaces[space_index].tabs.len();
-            if len == 0 {
-                let root = self.spaces[space_index].root.clone();
-                let previous = self.current;
-                self.current = space_index;
-                self.open_tab(PaneKind::Agent, root, None, None, window, cx);
-                self.current = previous;
-            } else {
-                self.spaces[space_index].active =
-                    self.spaces[space_index].active.min(len.saturating_sub(1));
-            }
             return;
         };
         let focused = built
@@ -1009,15 +1001,8 @@ impl Workspace {
         tab_panel::after_removal(&mut self.spaces[space], index);
         self.prune_tab_selection(cx);
         self.announce_close(window, cx);
-        if space == self.current {
-            if self.space().tabs.is_empty() {
-                // Only the shown workspace needs a replacement tab right now.
-                let root = self.space().root.clone();
-                self.open_tab(PaneKind::Agent, root, None, None, window, cx);
-                self.save_now(cx);
-            } else {
-                self.activate(self.space().active, window, cx);
-            }
+        if space == self.current && !self.space().tabs.is_empty() {
+            self.activate(self.space().active, window, cx);
         } else {
             self.schedule_save(cx);
             cx.notify();

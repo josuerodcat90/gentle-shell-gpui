@@ -4999,6 +4999,66 @@ fn capabilities_gate_the_new_methods_and_events_per_backend() {
 }
 
 #[test]
+fn default_orchestrator_route_is_only_a_set_model() {
+    let answer = |orchestrator: Value| {
+        json!({
+            "agents": [], "truncated": false, "problems": { "invalid": 0, "notices": 0 },
+            "subagentDefaults": { "model": "other/subagent", "thinking": null, "mode": "task" },
+            "defaultOrchestrator": orchestrator
+        })
+    };
+    // Unknown fields are tolerated, and a model id may itself contain a slash.
+    let mut extended = answer(json!({
+        "status": "set", "model": "openrouter/anthropic/claude", "thinking": "low", "extra": true
+    }));
+    extended["futureField"] = json!([]);
+    let definitions = ok_response(extended).agent_definitions().unwrap();
+    assert_eq!(
+        definitions.default_orchestrator.route(),
+        Some(("openrouter/anthropic/claude", Some("low")))
+    );
+
+    // A set status without a model, or a model under another status, names none;
+    // the subagent default never stands in for it.
+    for orchestrator in [
+        json!({"status": "set", "model": null, "thinking": "low"}),
+        json!({"status": "set"}),
+        json!({"status": "set", "model": ""}),
+        json!({"status": "unset", "model": "provider/id"}),
+    ] {
+        let definitions = ok_response(answer(orchestrator.clone()))
+            .agent_definitions()
+            .unwrap();
+        assert_eq!(
+            definitions.default_orchestrator.route(),
+            None,
+            "{orchestrator}"
+        );
+    }
+
+    // Malformed answers fail to decode instead of yielding a default.
+    for orchestrator in [
+        json!({"status": "SET", "model": "provider/id"}),
+        json!({"status": "set", "model": 42}),
+        json!({"model": "provider/id"}),
+        Value::Null,
+    ] {
+        assert!(
+            ok_response(answer(orchestrator.clone()))
+                .agent_definitions()
+                .is_err(),
+            "{orchestrator}"
+        );
+    }
+    for data in [
+        json!({"subagentDefaults": {"model": "other/subagent"}}),
+        json!([]),
+    ] {
+        assert!(ok_response(data).agent_definitions().is_err());
+    }
+}
+
+#[test]
 fn new_methods_with_required_params_only_come_from_their_typed_requests() {
     for method in [
         DesktopMethod::GetJobOutput,
