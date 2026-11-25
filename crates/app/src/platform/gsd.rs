@@ -4,7 +4,9 @@
 //! the single-instance server switches its window to that workspace.
 //!
 //! The command is a generated shim that runs this executable with `--cwd`
-//! and returns to the prompt at once. Unlike the agents' shims it goes on
+//! and returns to the prompt at once for normal launches. Workspace commands
+//! run synchronously so their output and exit status reach the calling shell.
+//! Unlike the agents' shims it goes on
 //! the user's own PATH, but only when they ask (palette → Install `gsd`
 //! command) or through the Windows installer, which ships its own copy.
 
@@ -32,13 +34,17 @@ fn shim_body(exe: &Path) -> String {
     // `start` returns to the prompt instead of waiting for the window; cmd.exe
     // would expand a `%` in the path.
     let exe = exe.to_string_lossy().replace('%', "%%");
-    format!("@echo off\r\nrem {MARKER}\r\nstart \"\" \"{exe}\" --cwd %*\r\n")
+    format!(
+        "@echo off\r\nrem {MARKER}\r\nif \"%~1\"==\"workspace\" goto workspace\r\nstart \"\" \"{exe}\" --cwd %*\r\nexit /b %errorlevel%\r\n:workspace\r\n\"{exe}\" %*\r\nexit /b %errorlevel%\r\n"
+    )
 }
 
 #[cfg(not(windows))]
 fn shim_body(exe: &Path) -> String {
     let exe = exe.to_string_lossy().replace('\'', "'\\''");
-    format!("#!/bin/sh\n# {MARKER}\n'{exe}' --cwd \"$@\" >/dev/null 2>&1 &\n")
+    format!(
+        "#!/bin/sh\n# {MARKER}\nif [ \"$1\" = workspace ]; then\n  exec '{exe}' \"$@\"\nfi\n'{exe}' --cwd \"$@\" >/dev/null 2>&1 &\n"
+    )
 }
 
 fn is_ours(path: &Path) -> bool {
@@ -169,6 +175,7 @@ mod tests {
         let body = std::fs::read_to_string(&path).unwrap();
         assert_eq!(body, shim_body(exe));
         assert!(body.contains("--cwd") && body.contains("Gentle Shell"));
+        assert!(body.contains("workspace") && body.contains("exit /b") == cfg!(windows));
         assert!(is_ours(&path));
 
         // Someone else's `gsd` is never taken for ours.

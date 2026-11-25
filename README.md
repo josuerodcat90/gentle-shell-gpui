@@ -94,6 +94,20 @@ The app does not reimplement Gentle Shell. Each tab starts `gentle-shell --mode 
 
 ### Workspaces and tiling — Every project in its place
 
+Manage Desktop workspaces from your terminal with the installed `gsd` command:
+
+```sh
+gsd workspace list --json
+gsd workspace current
+gsd workspace create frontend .
+gsd workspace switch frontend
+gsd workspace rename frontend web
+gsd workspace set-root web ./src
+gsd workspace remove web --force
+```
+
+`gsd workspace --help` lists the commands. Relative paths are resolved from the calling terminal. List and current read the live state when Desktop is open, otherwise the last saved state; mutations start Desktop if needed. Switching keeps other agents running. Changing a root only affects Files and future tabs; existing tabs keep their own working folders. Removing a workspace closes its tabs and stops its agents, but keeps files and conversations; `--force` explicitly confirms this. Each workspace still has one root. Use `gsd ./workspace` to open a directory literally named `workspace`.
+
 Named workspaces (each with its own folder and tabs), saved and restored; agents in other workspaces keep running while you switch. A dot on the title bar's workspace chip says an agent in another workspace is working (accent) or needs you (amber) (with vertical tabs, each project row in the sidebar carries its own dot instead), and the switcher (⌃⌘K) shows which: "working" or "needs you" on each workspace.
 
 <details>

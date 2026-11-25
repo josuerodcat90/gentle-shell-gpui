@@ -10,6 +10,7 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use gentle_core::workspace_commands::{Command as WorkspaceCommand, Reply as WorkspaceReply};
 use serde::{Deserialize, Serialize};
 
 /// What a second launch asks the running app to do.
@@ -41,11 +42,17 @@ struct Message {
     /// of "ok".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     browser: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workspace: Option<WorkspaceCommand>,
 }
 
 /// What reaches the running app from a later launch or a command.
 pub enum Incoming {
     Open(OpenRequest),
+    Workspace {
+        command: WorkspaceCommand,
+        reply: std::sync::mpsc::Sender<WorkspaceReply>,
+    },
     /// A `gentle-browser` operation and where its answer goes.
     Browser {
         op: serde_json::Value,
@@ -105,6 +112,7 @@ fn forward(path: &Path, request: &OpenRequest) -> bool {
         token: record.token,
         request: request.clone(),
         browser: None,
+        workspace: None,
     };
     let Ok(mut line) = serde_json::to_vec(&message) else {
         return false;
@@ -133,6 +141,7 @@ pub fn browser(op: &serde_json::Value, timeout: Duration) -> Result<serde_json::
         token: record.token,
         request: OpenRequest::default(),
         browser: Some(op.clone()),
+        workspace: None,
     };
     let mut line = serde_json::to_vec(&message).map_err(|e| e.to_string())?;
     line.push(b'\n');
@@ -142,6 +151,74 @@ pub fn browser(op: &serde_json::Value, timeout: Duration) -> Result<serde_json::
         .read_line(&mut reply)
         .map_err(|_| "the app didn't answer in time".to_string())?;
     serde_json::from_str(reply.trim()).map_err(|_| "the app didn't answer".to_string())
+}
+
+/// None means no connection was made; an error after connecting must not be retried.
+pub fn workspace(command: &WorkspaceCommand) -> Result<Option<WorkspaceReply>, String> {
+    let Some(path) = record_path() else {
+        return Ok(None);
+    };
+    workspace_at(&path, command)
+}
+
+fn workspace_at(path: &Path, command: &WorkspaceCommand) -> Result<Option<WorkspaceReply>, String> {
+    let Some(record) = record(path) else {
+        return Ok(None);
+    };
+    let addr = SocketAddr::from(([127, 0, 0, 1], record.port));
+    let mut stream = match TcpStream::connect_timeout(&addr, Duration::from_millis(400)) {
+        Ok(stream) => stream,
+        Err(error) => {
+            // A closed app leaves its instance record behind. On Windows
+            // connecting to that port may time out instead of being refused.
+            // Never start a second app if the recorded owner is still alive.
+            if unavailable_endpoint(error.kind()) && !owner_is_running(record.pid) {
+                return Ok(None);
+            }
+            return Err(format!("Could not reach Desktop: {error}"));
+        }
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .map_err(|e| e.to_string())?;
+    let message = Message {
+        token: record.token,
+        request: OpenRequest::default(),
+        browser: None,
+        workspace: Some(command.clone()),
+    };
+    let mut line = serde_json::to_vec(&message).map_err(|e| e.to_string())?;
+    line.push(b'\n');
+    stream
+        .write_all(&line)
+        .map_err(|e| format!("Request outcome unknown: {e}"))?;
+    let mut reply = String::new();
+    BufReader::new(stream)
+        .read_line(&mut reply)
+        .map_err(|e| format!("Request outcome unknown: {e}"))?;
+    serde_json::from_str(&reply).map(Some).map_err(|_| {
+        "Desktop did not return a workspace reply; check its state and version before retrying."
+            .into()
+    })
+}
+
+fn unavailable_endpoint(kind: std::io::ErrorKind) -> bool {
+    matches!(
+        kind,
+        std::io::ErrorKind::ConnectionRefused | std::io::ErrorKind::TimedOut
+    )
+}
+
+fn owner_is_running(pid: u32) -> bool {
+    use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
+
+    let pid = Pid::from_u32(pid);
+    let mut system = System::new();
+    system.refresh_processes_specifics(ProcessesToUpdate::Some(&[pid]), ProcessRefreshKind::new());
+    system.process(pid).is_some()
 }
 
 fn listen(path: &Path) -> std::io::Result<async_channel::Receiver<Incoming>> {
@@ -182,6 +259,13 @@ fn listen(path: &Path) -> std::io::Result<async_channel::Receiver<Incoming>> {
                 if message.token != token {
                     continue;
                 }
+                if let Some(command) = message.workspace {
+                    let tx = tx.clone();
+                    let _ = std::thread::Builder::new()
+                        .name("workspace-op".into())
+                        .spawn(move || answer_workspace(stream, command, &tx));
+                    continue;
+                }
                 if let Some(op) = message.browser {
                     // An operation may wait (for the page, or for the user to
                     // pick an element): answered on a thread of its own.
@@ -198,6 +282,30 @@ fn listen(path: &Path) -> std::io::Result<async_channel::Receiver<Incoming>> {
             }
         })?;
     Ok(rx)
+}
+
+fn answer_workspace(
+    mut stream: TcpStream,
+    command: WorkspaceCommand,
+    tx: &async_channel::Sender<Incoming>,
+) {
+    let (reply, answer) = std::sync::mpsc::channel();
+    let result = if tx
+        .send_blocking(Incoming::Workspace { command, reply })
+        .is_err()
+    {
+        Err("The app is closing".into())
+    } else {
+        answer
+            .recv_timeout(Duration::from_secs(25))
+            .unwrap_or_else(|_| {
+                Err("Request outcome unknown; check the workspace before retrying".into())
+            })
+    };
+    if let Ok(mut line) = serde_json::to_vec(&result) {
+        line.push(b'\n');
+        let _ = stream.write_all(&line);
+    }
 }
 
 /// Hand `op` to the app and write its answer back as one JSON line.
@@ -246,6 +354,39 @@ mod tests {
     use super::{Incoming, OpenRequest, forward, listen};
 
     #[test]
+    fn stale_workspace_endpoint_can_be_refused_or_time_out() {
+        use std::io::ErrorKind;
+
+        assert!(super::unavailable_endpoint(ErrorKind::ConnectionRefused));
+        assert!(super::unavailable_endpoint(ErrorKind::TimedOut));
+        assert!(!super::unavailable_endpoint(ErrorKind::PermissionDenied));
+        assert!(super::owner_is_running(std::process::id()));
+    }
+
+    #[test]
+    fn workspace_request_waits_for_real_reply() {
+        use gentle_core::workspace_commands::{Command, Output};
+        let path = std::env::temp_dir()
+            .join(format!("gs-workspace-ipc-test-{}", std::process::id()))
+            .join("instance.json");
+        let rx = listen(&path).unwrap();
+        let client_path = path.clone();
+        let client = std::thread::spawn(move || super::workspace_at(&client_path, &Command::List));
+        match rx.recv_blocking().unwrap() {
+            Incoming::Workspace { command, reply } => {
+                assert_eq!(command, Command::List);
+                reply.send(Ok(Output::Workspaces(Vec::new()))).unwrap();
+            }
+            _ => panic!("expected workspace request"),
+        }
+        assert_eq!(
+            client.join().unwrap().unwrap(),
+            Some(Ok(Output::Workspaces(Vec::new())))
+        );
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn second_launch_is_forwarded_to_the_primary() {
         let path = std::env::temp_dir()
             .join(format!("gs-instance-test-{}", std::process::id()))
@@ -260,7 +401,9 @@ mod tests {
         assert!(forward(&path, &request), "a live primary accepts");
         match rx.recv_blocking().unwrap() {
             Incoming::Open(received) => assert_eq!(received, request),
-            Incoming::Browser { .. } => panic!("an open request arrives as Open"),
+            Incoming::Browser { .. } | Incoming::Workspace { .. } => {
+                panic!("an open request arrives as Open")
+            }
         }
 
         // A record pointing at a dead listener means "become primary".

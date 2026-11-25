@@ -49,6 +49,7 @@ use gentle_core::commands::Screen;
 mod actions;
 mod badge;
 mod closed;
+mod commands;
 mod layout;
 mod menu;
 mod overlays;

@@ -92,6 +92,26 @@ pub fn run(
                 while let Ok(incoming) = requests.recv().await {
                     let request = match incoming {
                         instance::Incoming::Open(request) => request,
+                        instance::Incoming::Workspace { command, reply } => {
+                            let activate = matches!(
+                                &command,
+                                gentle_core::workspace_commands::Command::Create { .. }
+                                    | gentle_core::workspace_commands::Command::Switch { .. }
+                            );
+                            let answered = handle.update(cx, |_, window, cx| {
+                                workspace
+                                    .update(cx, |w, cx| w.workspace_command(command, window, cx))
+                            });
+                            let result = match answered {
+                                Ok(Ok(result)) => result,
+                                _ => Err("The window is closed".into()),
+                            };
+                            if activate && result.is_ok() {
+                                cx.update(|cx| cx.activate(true));
+                            }
+                            let _ = reply.send(result);
+                            continue;
+                        }
                         // An agent driving a page doesn't pull the window forward.
                         instance::Incoming::Browser { op, reply } => {
                             let answered = handle.update(cx, |_, window, cx| {

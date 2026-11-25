@@ -5,6 +5,7 @@ mod cli;
 mod features;
 mod platform;
 mod shared;
+mod workspace_cli;
 
 use features::setup;
 use platform::instance;
@@ -14,6 +15,7 @@ fn main() {
     // agents' commands) and `--diagnostics-report` run here and exit.
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
+        Some("workspace") => std::process::exit(workspace_cli::run(args.collect())),
         Some("--device") => std::process::exit(features::devices::cli::run(args.collect())),
         Some("--browser") => std::process::exit(features::browser::cli::run(args.collect())),
         Some("--screen") => std::process::exit(features::screen::cli::run(args.collect())),
