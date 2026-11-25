@@ -72,6 +72,59 @@ impl AgentPages {
     }
 }
 
+/// Gentle Shell's switch for its design canvas (gentle-shell#3517): `0`
+/// keeps `gentle_design open` from launching the system browser, while the
+/// canvas still starts and its `design_canvas` `open` event still carries
+/// the URL. Shells without the switch ignore it and open the browser.
+pub const DESIGN_OPEN_BROWSER_ENV: &str = "GENTLE_DESIGN_OPEN_BROWSER";
+
+/// What an agent tab's Gentle Shell starts with about the design canvas:
+/// [`DESIGN_OPEN_BROWSER_ENV`]`=0` whenever the app shows the canvas itself
+/// from its URL: in its card while agents' pages show inside the app, or
+/// in the chosen browser while they go there (the app opens it once), so
+/// Gentle Shell's own system-browser tab would be a second one. Nothing only
+/// where the app would show nothing: pages inside the app on Linux under
+/// Wayland (`wayland_display` set, which GPUI then picks), which has no
+/// child windows, so the card can't draw and the canvas stays in the browser
+/// Gentle Shell opens. Read when the tab's backend starts.
+pub fn design_launch_env(
+    pages: AgentPages,
+    os: Os,
+    wayland_display: Option<&std::ffi::OsStr>,
+) -> Option<(String, String)> {
+    let wayland = os == Os::Linux && wayland_display.is_some_and(|display| !display.is_empty());
+    (pages.outside() || !wayland).then(|| (DESIGN_OPEN_BROWSER_ENV.to_string(), "0".to_string()))
+}
+
+/// The design canvas's opens in a browser outside the app (agents' pages on
+/// **In my browser**). Each new open of the canvas opens a tab, even at a
+/// URL opened before: Gentle Shell reports an open only while no page shows
+/// the canvas, so the earlier tab was closed. One open can reach the app
+/// twice on an older Shell (its `notify` text and its `gentle_design`
+/// result), so the same URL again within [`Self::SAME_OPEN`] is that same
+/// open and opens nothing. A refresh is never an open.
+#[derive(Debug, Default)]
+pub struct OutsideCanvas {
+    last: Option<(String, std::time::Instant)>,
+}
+
+impl OutsideCanvas {
+    /// How far apart the two reports of one open can arrive.
+    pub const SAME_OPEN: std::time::Duration = std::time::Duration::from_secs(3);
+
+    /// Whether an open of the canvas at `url`, reported at `now`, opens a
+    /// browser tab; it is remembered when it does.
+    pub fn opens(&mut self, url: &str, now: std::time::Instant) -> bool {
+        let same_open = self.last.as_ref().is_some_and(|(last, at)| {
+            last == url && now.saturating_duration_since(*at) < Self::SAME_OPEN
+        });
+        if !same_open {
+            self.last = Some((url.to_string(), now));
+        }
+        !same_open
+    }
+}
+
 /// A web browser the app can open a page in.
 #[derive(Debug)]
 pub struct WebBrowser {
@@ -364,6 +417,50 @@ mod tests {
         assert!(AgentPages::from_setting(Some(&json!("browser"))).outside());
         assert_eq!(AgentPages::InApp.label(), "Inside the app");
         assert_eq!(AgentPages::Browser.label(), "In my browser");
+    }
+
+    #[test]
+    fn the_design_canvas_keeps_the_system_browser_closed_whenever_the_app_opens_it() {
+        let off = Some((DESIGN_OPEN_BROWSER_ENV.to_string(), "0".to_string()));
+        // The app's card, or the chosen browser the app opens itself.
+        for os in [Os::Mac, Os::Windows, Os::Linux] {
+            for pages in AgentPages::ALL {
+                assert_eq!(design_launch_env(pages, os, None), off);
+            }
+        }
+        // Wayland: the card can't draw, so only Gentle Shell's tab shows it;
+        // pages in the browser are still the app's own to open.
+        let wayland = Some(std::ffi::OsStr::new("wayland-0"));
+        assert_eq!(
+            design_launch_env(AgentPages::InApp, Os::Linux, wayland),
+            None
+        );
+        assert_eq!(
+            design_launch_env(AgentPages::Browser, Os::Linux, wayland),
+            off
+        );
+        // X11 (an empty `WAYLAND_DISPLAY` names no compositor), and a
+        // variable that means nothing off Linux.
+        let empty = Some(std::ffi::OsStr::new(""));
+        assert_eq!(design_launch_env(AgentPages::InApp, Os::Linux, empty), off);
+        assert_eq!(design_launch_env(AgentPages::InApp, Os::Mac, wayland), off);
+    }
+
+    #[test]
+    fn every_new_canvas_open_opens_outside_but_one_open_only_once() {
+        let url = "http://127.0.0.1:4100/tok/d/landing/";
+        let start = std::time::Instant::now();
+        let mut outside = OutsideCanvas::default();
+        assert!(outside.opens(url, start));
+        // The same open reported twice (`notify` text and tool result).
+        assert!(!outside.opens(url, start + std::time::Duration::from_millis(50)));
+        // The tab was closed and the agent opened the canvas again.
+        let later = start + OutsideCanvas::SAME_OPEN;
+        assert!(outside.opens(url, later));
+        // Another design right after is its own open.
+        let other = "http://127.0.0.1:4100/tok/d/pricing/";
+        assert!(outside.opens(other, later));
+        assert!(outside.opens(url, later));
     }
 
     #[test]

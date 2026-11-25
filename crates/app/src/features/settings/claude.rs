@@ -7,7 +7,6 @@ use std::time::{Duration, Instant};
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::h_flex;
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use pi_rpc::file_cache::Stamp;
 use serde_json::Value;
@@ -128,30 +127,26 @@ impl SettingsView {
         self.reload(cx);
     }
 
-    /// The bridge's package, Claude Code's sign-in and the Pro/Max plan.
-    pub(super) fn bridge_section(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
-        let bridge_installed = s.has_package("npm:pi-claude-bridge");
+    /// An existing bridge install: its package, Claude Code's sign-in and the
+    /// Pro/Max plan. `None` without the bridge: the app doesn't offer it.
+    pub(super) fn bridge_section(&self, s: &Snapshot, cx: &mut Context<Self>) -> Option<Div> {
+        if !s.has_package("npm:pi-claude-bridge") {
+            return None;
+        }
         let plan = match s.bridge_plan.as_deref() {
             Some("max") => Some(1),
             Some("pro") | None => Some(0),
             Some(_) => None,
         };
-        section(IconName::Bot, "Claude bridge")
-            .child(row(
-                "Package",
-                if bridge_installed {
-                    "pi-claude-bridge installed".to_string()
-                } else {
-                    "not installed".to_string()
-                },
-            ))
-            .child(row("Claude Code", or_dash(&s.claude_code, "checking…")))
-            .child(row(
-                "Plan",
-                or_dash(&s.bridge_plan, "pro (default; set max for Opus 1M)"),
-            ))
-            .when(bridge_installed, |d| {
-                d.child(
+        Some(
+            section(IconName::Bot, "Claude bridge")
+                .child(row("Package", "pi-claude-bridge installed".to_string()))
+                .child(row("Claude Code", or_dash(&s.claude_code, "checking…")))
+                .child(row(
+                    "Plan",
+                    or_dash(&s.bridge_plan, "pro (default; set max for Opus 1M)"),
+                ))
+                .child(
                     h_flex()
                         .pt_2()
                         .gap_2()
@@ -164,8 +159,8 @@ impl SettingsView {
                                 this.set_plan(if *index == 1 { "max" } else { "pro" }, cx)
                             }),
                         )),
-                )
-            })
+                ),
+        )
     }
 }
 

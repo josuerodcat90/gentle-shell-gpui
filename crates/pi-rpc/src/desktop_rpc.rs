@@ -125,8 +125,8 @@ pub use binding::{
 };
 pub use changes::{ChangeDiff, ChangeRoot, ChangeStatus, ChangedFile, Changes};
 pub use definitions::{
-    AgentDefinition, AgentDefinitionProblems, AgentDefinitionScope, AgentDefinitions,
-    DefaultOrchestrator, OrchestratorStatus, SubagentDefaults,
+    AgentDefinition, AgentDefinitionProblems, AgentDefinitionScope, AgentDefinitionSource,
+    AgentDefinitions, DefaultOrchestrator, OrchestratorStatus, SubagentDefaults,
 };
 pub use output::{JobOutput, SubagentThread, ThreadItem};
 pub use review::{

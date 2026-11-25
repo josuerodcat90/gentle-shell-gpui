@@ -123,7 +123,7 @@ impl SettingsPage {
                 "update upgrade versions app gentle shell engram release install notes check github restart desktop rpc"
             }
             Self::Extensions => {
-                "package packages extension extensions install remove npm git local recommended updates version management advanced"
+                "package packages extension extensions install remove npm git local updates version management advanced"
             }
         }
     }

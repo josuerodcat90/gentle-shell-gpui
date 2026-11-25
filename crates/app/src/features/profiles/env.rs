@@ -202,11 +202,12 @@ pub fn discover_agents(env: &Env) -> Vec<AgentEntry> {
     ordered
 }
 
-/// The agents of the roots Gentle Shell's `list_agent_definitions` does not
-/// read (it covers `<agent home>/agents`, `<agent home>/subagents`,
+/// The agents of the roots Gentle Shell 5.0.0's `list_agent_definitions`
+/// does not read (it covers `<agent home>/agents`, `<agent home>/subagents`,
 /// `<cwd>/.pi/agents` and `<cwd>/.pi/subagents`): the built-in package
 /// agents, `~/.agents` and `<cwd>/.agents`. The screen joins them to what
-/// the Shell reported, so its routing table keeps listing every agent.
+/// such a Shell reported, so its routing table keeps listing every agent;
+/// a Shell whose answer carries `source` already lists them.
 pub fn uncovered_agents(env: &Env) -> Vec<AgentEntry> {
     let mut agents = Vec::new();
     for dir in builtin_dirs(env) {

@@ -133,9 +133,10 @@ impl Workspace {
         external::open(&url, cx);
     }
 
-    /// Gentle Design's canvas: kept in the tray when it opens (or opened once
-    /// in the browser outside the app, which the canvas then reloads itself),
-    /// reloaded in place when it refreshes, removed when it stops.
+    /// Gentle Design's canvas: kept in the tray when it opens, reloaded in
+    /// place when it refreshes, removed when it stops. On **In my browser**
+    /// each new open opens it in the browser outside the app (the page then
+    /// reloads itself), a refresh opens nothing ([`opens_outside`]).
     pub(super) fn show_design_canvas(
         &mut self,
         canvas: CanvasNotice,
@@ -150,7 +151,7 @@ impl Workspace {
                 .is_design()
                 .then(|| stage.panel.clone())
         };
-        match canvas {
+        let url = match &canvas {
             CanvasNotice::Stopped => {
                 let ids: Vec<u64> = self
                     .stages
@@ -161,26 +162,36 @@ impl Workspace {
                 for id in ids {
                     self.remove_stage(id, window, cx);
                 }
+                return;
             }
-            CanvasNotice::Open { url, .. } => {
-                let label = Some("Design canvas".to_string());
-                // The design card, or a card already showing the canvas's
-                // page (`gentle-open` of its URL), which becomes the design
-                // card.
-                let card = self
-                    .stages
-                    .iter()
-                    .find_map(|stage| design(stage, cx))
-                    .or_else(|| self.stage_for(&url, cx).map(|(_, panel)| panel));
-                match card {
-                    Some(entity) => entity.update(cx, |panel, cx| panel.navigate(url, label, cx)),
-                    None if external::agent_pages(cx).outside() => self.open_outside(url, true, cx),
-                    None => {
-                        let panel = cx.new(|cx| BrowserPanel::new(url, label, cx));
-                        self.add_stage(panel, Some(origin), false, window, cx);
-                    }
+            CanvasNotice::Open { url, .. } | CanvasNotice::Reopen { url } => url.clone(),
+        };
+        // The design card, or a card already showing the canvas's page
+        // (`gentle-open` of its URL), which becomes the design card.
+        let card = self
+            .stages
+            .iter()
+            .find_map(|stage| design(stage, cx))
+            .or_else(|| self.stage_for(&url, cx).map(|(_, panel)| panel));
+        let label = Some("Design canvas".to_string());
+        match (card, canvas) {
+            (Some(entity), CanvasNotice::Open { .. }) => {
+                entity.update(cx, |panel, cx| panel.navigate(url, label, cx))
+            }
+            (None, canvas) if external::agent_pages(cx).outside() => {
+                if opens_outside(&canvas)
+                    && self.canvas_outside.opens(&url, std::time::Instant::now())
+                {
+                    self.opened_outside.insert(url.clone());
+                    external::open(&url, cx);
                 }
             }
+            (None, CanvasNotice::Open { .. }) => {
+                let panel = cx.new(|cx| BrowserPanel::new(url, label, cx));
+                self.add_stage(panel, Some(origin), false, window, cx);
+            }
+            // Inside the app the card holds the page, or was closed on purpose.
+            _ => {}
         }
     }
 
@@ -938,6 +949,20 @@ impl RenderOnce for TrayTrigger {
     }
 }
 
+/// Whether a canvas notice opens the canvas in the browser outside the app:
+/// every new open does, even at a URL shown before (Gentle Shell reports
+/// `open` only while no page shows the canvas); a refresh reloads the page
+/// already showing it, and a stop closes nothing out there.
+fn opens_outside(canvas: &CanvasNotice) -> bool {
+    matches!(
+        canvas,
+        CanvasNotice::Open {
+            refreshed: false,
+            ..
+        } | CanvasNotice::Reopen { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
@@ -997,6 +1022,7 @@ mod tests {
                     stages: Vec::new(),
                     next_stage: 1,
                     opened_outside: Default::default(),
+                    canvas_outside: Default::default(),
                     browser_dock_drag: None,
                     browser_dock_room: Default::default(),
                     resume_welcome: None,
@@ -1066,5 +1092,50 @@ mod tests {
             assert!(!workspace.stages[1].panel.read(cx).is_design());
             assert!(workspace.opened_outside.is_empty());
         });
+    }
+
+    /// Inside the app a new open of the URL already shown leaves the card
+    /// as it is: no second card, nothing outside.
+    #[gpui::test]
+    fn a_reopen_keeps_the_card_inside_the_app(cx: &mut TestAppContext) {
+        with_workspace(cx, |workspace, window, cx| {
+            canvas_opened(workspace, window, cx);
+            let reopen = CanvasNotice::Reopen { url: CANVAS.into() };
+            workspace.update(cx, |w, cx| w.show_design_canvas(reopen, 1, window, cx));
+            let workspace = workspace.read(cx);
+            assert_eq!(workspace.stages.len(), 1);
+            assert!(workspace.opened_outside.is_empty());
+        });
+    }
+
+    /// "In my browser": the open, the closed tab's open again, a refresh and
+    /// the two reports of one open, as `show_design_canvas` decides them
+    /// before starting the browser.
+    #[test]
+    fn the_canvas_opens_outside_on_every_new_open_only() {
+        let mut outside = gentle_core::web_browsers::OutsideCanvas::default();
+        let start = std::time::Instant::now();
+        let mut opens = |canvas: CanvasNotice, after: std::time::Duration| {
+            super::opens_outside(&canvas) && outside.opens(CANVAS, start + after)
+        };
+        let open = || CanvasNotice::Open {
+            url: CANVAS.into(),
+            refreshed: false,
+        };
+        let second = std::time::Duration::from_secs(1);
+        assert!(opens(open(), std::time::Duration::ZERO));
+        // The `notify` text and the result of that same open.
+        assert!(!opens(open(), second / 10));
+        // A refresh reloads the tab that shows it.
+        let refresh = CanvasNotice::Open {
+            url: CANVAS.into(),
+            refreshed: true,
+        };
+        assert!(!opens(refresh, second * 10));
+        // The tab was closed (no page connected): the next open reopens it.
+        let reopen = || CanvasNotice::Reopen { url: CANVAS.into() };
+        assert!(opens(reopen(), second * 20));
+        assert!(opens(open(), second * 30));
+        assert!(!opens(CanvasNotice::Stopped, second * 40));
     }
 }

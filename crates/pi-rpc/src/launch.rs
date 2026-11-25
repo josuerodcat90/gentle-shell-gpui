@@ -1193,6 +1193,24 @@ mod tests {
         );
     }
 
+    /// The tab's variables (the design canvas's browser switch among them)
+    /// reach Gentle Shell in a backend as `env` arguments before it starts.
+    #[test]
+    fn a_backend_rpc_launch_carries_the_tab_variables() {
+        let launch = ["wsl.exe", "-d", "Ubuntu", "--exec"].map(str::to_string);
+        let env = [("GENTLE_DESIGN_OPEN_BROWSER".to_string(), "0".to_string())];
+        let spec =
+            remote_backend(&launch, None, &env, |file| Some(file.display().to_string())).unwrap();
+        let at = |arg: &str| spec.args.iter().position(|a| a == arg);
+        let variable = at("GENTLE_DESIGN_OPEN_BROWSER=0").unwrap();
+        assert!(at("env").unwrap() < variable);
+        assert!(variable < at("gentle-shell").unwrap());
+        assert_eq!(
+            spec.args[at("gentle-shell").unwrap()..][..3],
+            ["gentle-shell", "--mode", "rpc"]
+        );
+    }
+
     /// A shell rc file that starts a daemon (ssh-agent, keychain) leaves it
     /// holding stdout: the run still returns once the shell itself exits.
     #[cfg(unix)]

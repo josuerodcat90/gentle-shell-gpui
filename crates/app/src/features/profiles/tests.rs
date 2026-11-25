@@ -5,8 +5,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use gentle_core::profiles::{
-    AgentSource, PinRead, PinStatus, RouteEntry, Routing, assignment_names, bootstrap_profiles,
-    create_profile, evaluate_pin, serialize_profiles, update_frontmatter_routing,
+    AgentSource, PinRead, PinStatus, RouteEntry, Routing, assignment_names, assignment_names_of,
+    bootstrap_profiles, create_profile, evaluate_pin, serialize_profiles,
+    update_frontmatter_routing,
 };
 use pi_rpc::desktop_rpc::{
     AgentDefinitions, ApplyProfileOutcome, ApplyProfileResult, ConfigErrorCode, ConfigLayer,
@@ -1651,7 +1652,7 @@ fn reported_agents_join_only_the_roots_gentle_shell_does_not_read() {
         "defaultOrchestrator": { "status": "set", "model": "openai/gpt-5", "thinking": "high" }
     }))
     .unwrap();
-    let names = reported_names(&definitions, &uncovered_agents(&env));
+    let names = reported_names(&definitions, &env);
     // The same names the file discovery finds, from the Shell where it reads.
     assert_eq!(names, assignment_names(&discover_agents(&env)));
     assert!(names.iter().any(|name| name == "project-covered"));
@@ -1668,6 +1669,59 @@ fn reported_agents_join_only_the_roots_gentle_shell_does_not_read() {
     let unset: DefaultOrchestrator =
         serde_json::from_value(json!({ "status": "missing" })).unwrap();
     assert_eq!(orchestrator_route(&unset), None);
+}
+
+#[test]
+fn agents_that_say_where_they_came_from_are_the_whole_list() {
+    let scratch = Scratch::new("sourced-agents");
+    let agent = |name: &str| format!("---\nname: {name}\n---\n");
+    // On disk, but a Shell that sends `source` already read these roots: the
+    // answer is the list, so a stale or extra file here is never added.
+    scratch.write("home/.agents/on-disk.md", &agent("on-disk"));
+    scratch.write("project/.agents/also-on-disk.md", &agent("also-on-disk"));
+    let env = scratch.env();
+    let answer = |agents: Value| -> AgentDefinitions {
+        serde_json::from_value(json!({
+            "agents": agents,
+            "truncated": false,
+            "problems": { "invalid": 0, "notices": 0 },
+            "subagentDefaults": { "model": null, "thinking": null, "mode": "task" },
+            "defaultOrchestrator": { "status": "unset" }
+        }))
+        .unwrap()
+    };
+    let entry = |name: &str, scope: &str, source: Option<&str>| {
+        let mut entry = json!({ "name": name, "description": null, "scope": scope, "model": null, "thinking": null, "mode": null, "tools": [], "toolsTruncated": false });
+        if let Some(source) = source {
+            entry["source"] = json!(source);
+        }
+        entry
+    };
+
+    let sourced = answer(json!([
+        entry("explore", "global", Some("user")),
+        entry("jd-judge-a", "global", Some("builtin")),
+        entry("local", "project", Some("project")),
+    ]));
+    assert_eq!(
+        reported_names(&sourced, &env),
+        assignment_names_of(["jd-judge-a", "explore", "local"])
+    );
+
+    // One agent without `source` (or with a kind this app does not know)
+    // makes it an older answer: the uncovered roots are read as before.
+    for odd in [None, Some("plugin")] {
+        let mixed = answer(json!([
+            entry("explore", "global", Some("user")),
+            entry("worker", "project", odd),
+        ]));
+        assert!(!mixed.lists_every_root(), "{odd:?}");
+        assert_eq!(
+            reported_names(&mixed, &env),
+            assignment_names_of(["also-on-disk", "explore", "on-disk", "worker"]),
+            "{odd:?}"
+        );
+    }
 }
 
 #[test]

@@ -1,16 +1,28 @@
-//! `list_agent_definitions`: the agent definitions this session can launch,
-//! the `subagents.json` defaults and Pi's default orchestrator, read fresh
-//! by the owners `subagent_list_agents` and `/gentle:profiles` use. No file
-//! path, prompt body or problem text crosses; only counts of problems.
+//! `list_agent_definitions`: the agent definitions `/gentle:profiles` can
+//! route, the `subagents.json` defaults and Pi's default orchestrator, read
+//! fresh by the owners `subagent_list_agents` and `/gentle:profiles` use. No
+//! file path, prompt body or problem text crosses; only counts of problems.
 
 use super::{DesktopRpcError, decode_data};
 use serde::Deserialize;
 use serde_json::Value;
 
 wire_enum! {
-    /// Where a definition was found: the agent home or the project's `.pi`.
+    /// Where a definition was found: global (the package, the agent home,
+    /// `~/.agents`) or the project (`<cwd>/.agents`, `<cwd>/.pi`).
     AgentDefinitionScope, "scope" {
         Global => "global",
+        Project => "project",
+    }
+}
+
+wire_enum! {
+    /// Where the winning definition came from, in `/gentle:profiles` terms:
+    /// the package's bundled agents (`builtin`), the agent home or
+    /// `~/.agents` (`user`), or `<cwd>/.agents` and `<cwd>/.pi` (`project`).
+    AgentDefinitionSource, "source" {
+        Builtin => "builtin",
+        User => "user",
         Project => "project",
     }
 }
@@ -30,17 +42,31 @@ wire_enum! {
 /// One discovered definition. `model`, `thinking` and `mode` are what it
 /// declares (`None` when it inherits); routing can still override `model`
 /// at launch. `tools` is the list after overlays, at most 64 names.
+/// `source` is `None` from a Shell that does not send it (5.0.0 and older)
+/// and for a value this client does not know.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentDefinition {
     pub name: String,
     pub description: Option<String>,
     pub scope: AgentDefinitionScope,
+    #[serde(default, deserialize_with = "known_source")]
+    pub source: Option<AgentDefinitionSource>,
     pub model: Option<String>,
     pub thinking: Option<String>,
     pub mode: Option<String>,
     pub tools: Vec<String>,
     pub tools_truncated: bool,
+}
+
+/// A `source` string; one this client does not know reads as absent, so a
+/// newer kind of root only costs the answer its completeness
+/// ([`AgentDefinitions::lists_every_root`]), not the whole answer.
+fn known_source<'de, D>(deserializer: D) -> Result<Option<AgentDefinitionSource>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Option::<String>::deserialize(deserializer)?.and_then(|source| source.parse().ok()))
 }
 
 /// Counts of definitions that failed to parse and of discovery notices.
@@ -96,5 +122,14 @@ pub struct AgentDefinitions {
 impl AgentDefinitions {
     pub(super) fn from_data(data: &Value) -> Result<Self, DesktopRpcError> {
         decode_data(data)
+    }
+
+    /// Whether this answer alone is every agent `/gentle:profiles` lists: a
+    /// Shell that reads all its roots (the bundled package agents,
+    /// `~/.agents` and `<cwd>/.agents` too) says where each one came from.
+    /// An answer without `source` (Gentle Shell 5.0.0) covers only the agent
+    /// home and `<cwd>/.pi`, and an empty one says nothing either way.
+    pub fn lists_every_root(&self) -> bool {
+        !self.agents.is_empty() && self.agents.iter().all(|agent| agent.source.is_some())
     }
 }

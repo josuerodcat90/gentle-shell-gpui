@@ -59,7 +59,7 @@ pub(crate) use env::{
 pub use gentle_core::profiles::ModelChoice;
 
 use apply::DefaultPlan;
-use env::{ConfigPort, Env, Landed, Remote, SCREEN_STORES, discover_agents, uncovered_agents};
+use env::{ConfigPort, Env, Landed, Remote, SCREEN_STORES, discover_agents};
 use files::{
     Loaded, RpcLoad, load_screen, orchestrator_route, profiles_write, read_orchestrator_settings,
     reported_names, rpc_load,
@@ -556,9 +556,10 @@ impl ProfilesView {
         );
     }
 
-    /// Gentle Shell answered `list_agent_definitions`: its agents, joined
-    /// with the roots it does not read, and its default orchestrator. A
-    /// failed read takes the files instead, as an older Shell would.
+    /// Gentle Shell answered `list_agent_definitions`: its agents (joined
+    /// with the roots an older Shell's read does not cover, see
+    /// [`reported_names`]) and its default orchestrator. A failed read takes
+    /// the files instead, as an older Shell would.
     fn take_definitions(&mut self, session: &Entity<SessionView>, cx: &mut Context<Self>) {
         let Some((ticket, full)) = self.definitions else {
             return;
@@ -581,7 +582,7 @@ impl ProfilesView {
             cx,
             move || {
                 let env = env.unwrap_or_else(|| Env::resolve(cwd));
-                let names = reported_names(&definitions, &uncovered_agents(&env));
+                let names = reported_names(&definitions, &env);
                 (env, Some(names), pi_default)
             },
             |this, (env, names, pi_default), cx| this.agents_read(env, names, pi_default, cx),

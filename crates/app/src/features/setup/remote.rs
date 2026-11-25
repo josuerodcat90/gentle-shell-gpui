@@ -92,8 +92,6 @@ pub(super) fn run_checks(choice: &Backend) -> Vec<Check> {
         CheckId::Setup,
         CheckId::Provider,
         CheckId::Git,
-        CheckId::ClaudeBridge,
-        CheckId::ClaudeLogin,
         CheckId::Engram,
     ];
     ids.into_iter()
@@ -152,35 +150,6 @@ pub(super) fn run_checks(choice: &Backend) -> Vec<Check> {
                     None => (
                         Status::Missing(format!("Install git in {label}")),
                         Fix::None,
-                    ),
-                },
-                CheckId::ClaudeBridge => match &bridge {
-                    Some(Some(version)) => (Status::Ok(format!("{BRIDGE} {version}")), Fix::None),
-                    Some(None) => (
-                        Status::Failed("Listed in settings, but its package is missing".into()),
-                        terminal(&format!("gentle-shell install npm:{BRIDGE}")),
-                    ),
-                    None => (
-                        Status::Missing("Not installed".into()),
-                        terminal(&format!("gentle-shell install npm:{BRIDGE}")),
-                    ),
-                },
-                CheckId::ClaudeLogin => match (claude, &bridge) {
-                    (Some(true), _) => (Status::Ok("Signed in".into()), Fix::None),
-                    (_, None) => (
-                        Status::Missing("Install the Claude bridge first".into()),
-                        Fix::None,
-                    ),
-                    (Some(false), _) => (
-                        Status::Missing("Not signed in".into()),
-                        terminal("claude auth login"),
-                    ),
-                    (None, _) => (
-                        Status::Missing(format!("Claude Code isn't installed in {label}")),
-                        terminal(&format!(
-                            "{} && claude auth login",
-                            npm_global("@anthropic-ai/claude-code")
-                        )),
                     ),
                 },
                 CheckId::Engram => match engram_version_text(choice) {

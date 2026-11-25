@@ -23,7 +23,7 @@ use pi_rpc::desktop_rpc::{
 };
 use serde_json::{Map, Value};
 
-use super::env::{Env, Remote, discover_agents};
+use super::env::{Env, Remote, discover_agents, uncovered_agents};
 use super::pins::{read_pin_status, rpc_pin_status};
 
 const FALLBACKS_KIND: &str = "gentle-pi.profile_model_fallbacks";
@@ -265,18 +265,22 @@ pub(super) fn orchestrator_route(orchestrator: &DefaultOrchestrator) -> Option<R
     })
 }
 
-/// The screen's assignment names from what Gentle Shell reported, joined
-/// with the agents of the roots its read does not cover.
-pub(super) fn reported_names(
-    definitions: &AgentDefinitions,
-    uncovered: &[AgentEntry],
-) -> Vec<String> {
+/// The screen's assignment names from what Gentle Shell reported. An answer
+/// that says where each agent came from lists every root `/gentle:profiles`
+/// does, so it is the whole list; an older Shell's (no `source`) is joined
+/// with the agents of the roots its read does not cover, read from `env`.
+pub(super) fn reported_names(definitions: &AgentDefinitions, env: &Env) -> Vec<String> {
+    let uncovered = if definitions.lists_every_root() {
+        Vec::new()
+    } else {
+        uncovered_agents(env)
+    };
     let reported: Vec<String> = definitions
         .agents
         .iter()
         .map(|agent| agent.name.clone())
         .collect();
-    reported_assignment_names(&reported, uncovered)
+    reported_assignment_names(&reported, &uncovered)
 }
 
 /// `followProfileRename` for `profile-fallbacks.json`; a broken file is left alone.

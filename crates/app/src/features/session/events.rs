@@ -1122,6 +1122,15 @@ mod tests {
             Some(CanvasNotice::Stopped)
         );
         assert_eq!(design_canvas(&json!({})), None);
+        // `GENTLE_DESIGN_OPEN_BROWSER=0` kept the system browser closed: the
+        // canvas still shows, in the app.
+        assert_eq!(
+            design_canvas(&json!({"url": "http://x", "opened": false, "browserDisabled": true})),
+            Some(CanvasNotice::Open {
+                url: "http://x".into(),
+                refreshed: false,
+            })
+        );
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Model defaults, profile and provider inventory, and Claude bridge.
+//! Model defaults, profile and provider inventory, and an installed Claude
+//! bridge.
 
 use gpui_kit::component::v_flex;
 use gpui_kit::*;
@@ -14,5 +15,5 @@ pub(super) fn render(
         .gap_3()
         .child(models::models_section(snapshot))
         .child(models::providers_section(snapshot, cx))
-        .child(view.bridge_section(snapshot, cx))
+        .children(view.bridge_section(snapshot, cx))
 }

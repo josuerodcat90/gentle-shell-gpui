@@ -1,12 +1,12 @@
 //! Packages: `gentle-shell install|remove`, Pi's own package manager
-//! against the resolved home, and the recommended ones. Update badges come
-//! from the active agent tab's Desktop RPC when available.
+//! against the resolved home. Update badges come from the active agent
+//! tab's Desktop RPC when available.
 
 use gpui_kit::assets::IconName;
 use gpui_kit::component::button::{Button, ButtonVariants as _};
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::spinner::Spinner;
-use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex, v_flex};
+use gpui_kit::component::{Disableable as _, Icon, Sizable as _, h_flex};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
@@ -15,19 +15,6 @@ use super::layout::{row, section};
 use super::snapshot::Snapshot;
 use super::{SettingsEvent, SettingsView};
 use crate::shared::ui;
-
-/// Recommended packages, with why. `pi-claude-bridge` is the provider Gentle
-/// Shell's docs reference for Claude subscriptions (priced turns, usage headers).
-pub const RECOMMENDED: &[(&str, &str)] = &[
-    (
-        "npm:pi-claude-bridge",
-        "Claude Pro/Max through Claude Code (claude-bridge/… models)",
-    ),
-    (
-        "npm:pi-claude-bridge-askclaude",
-        "AskClaude tool: delegate to Claude Code from another provider",
-    ),
-];
 
 /// The Advanced / Packages page's input, status and event subscription.
 /// The subscription lives with its input so it cannot be dropped by accident.
@@ -115,8 +102,7 @@ impl SettingsView {
         cx.notify();
     }
 
-    /// Installed packages (remove each), the recommended ones not yet
-    /// installed, and a field to install any source.
+    /// Installed packages (remove each) and a field to install any source.
     pub(super) fn packages_section(&self, s: &Snapshot, cx: &mut Context<Self>) -> Div {
         let updates = self.shell_updates.status.as_ref();
         let updating_shell = self.shell_update.blocks_packages();
@@ -228,50 +214,6 @@ impl SettingsView {
             .when(!s.extensions.is_empty(), |d| {
                 d.child(row("Extension filters", s.extensions.join(", ")))
             })
-            .when(
-                RECOMMENDED.iter().any(|(src, _)| !s.has_package(src)),
-                |d| d.child(div().pt_3().pb_1().child(ui::section_label("Recommended"))),
-            )
-            .children(
-                RECOMMENDED
-                    .iter()
-                    .filter(|(src, _)| !s.has_package(src))
-                    .map(|(src, why)| {
-                        h_flex()
-                            .gap_3()
-                            .px_2()
-                            .py_1p5()
-                            .rounded_lg()
-                            .bg(ui::accent().opacity(0.05))
-                            .border_1()
-                            .border_color(ui::accent().opacity(0.15))
-                            .child(
-                                v_flex()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(ui::code_rems(12.))
-                                            .font_family(ui::mono())
-                                            .text_color(ui::accent())
-                                            .child(*src),
-                                    )
-                                    .child(div().text_xs().text_color(ui::muted()).child(*why)),
-                            )
-                            .child(
-                                Button::new(SharedString::from(format!("install-{src}")))
-                                    .small()
-                                    .ghost()
-                                    .icon(Icon::new(IconName::Plus))
-                                    .label("Install")
-                                    .disabled(updating_shell)
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.run_package("install", src.to_string(), cx)
-                                    })),
-                            )
-                    }),
-            )
             .child(
                 h_flex()
                     .pt_3()

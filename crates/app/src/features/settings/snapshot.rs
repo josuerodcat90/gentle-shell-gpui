@@ -183,7 +183,8 @@ pub fn read_snapshot(agent: &Path, config: &Path, cwd: &Path) -> Snapshot {
     }
 }
 
-/// Runs the launcher's own read-only probes: `--version` and the home mode.
+/// Runs the launcher's own read-only probes: `--version` and the home mode,
+/// and Claude Code's sign-in only for an installed Claude bridge.
 pub(super) fn probe(spec: &pi_rpc::LaunchSpec, snapshot: &mut Snapshot) {
     snapshot.launcher = Some(spec.launcher.clone());
     if let Some(text) = pi_rpc::version_output(spec) {
@@ -195,7 +196,9 @@ pub(super) fn probe(spec: &pi_rpc::LaunchSpec, snapshot: &mut Snapshot) {
             }
         }
     }
-    snapshot.claude_code = super::claude::claude_auth_status();
+    if snapshot.has_package("npm:pi-claude-bridge") {
+        snapshot.claude_code = super::claude::claude_auth_status();
+    }
 }
 
 #[cfg(test)]

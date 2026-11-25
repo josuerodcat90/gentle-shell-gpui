@@ -459,32 +459,6 @@ pub fn bridge_version(agent: &Path) -> Option<Option<String>> {
     Some(read_json(&package).map(|p| p["version"].as_str().unwrap_or("?").to_string()))
 }
 
-pub fn check_bridge(agent: &Path) -> (Status, Fix) {
-    match bridge_version(agent) {
-        Some(Some(version)) => (Status::Ok(format!("{BRIDGE} {version}")), Fix::None),
-        Some(None) => (
-            Status::Failed("Listed in settings, but its package is missing".into()),
-            Fix::Auto,
-        ),
-        None => (Status::Missing("Not installed".into()), Fix::Auto),
-    }
-}
-
-/// `gentle-shell install npm:pi-claude-bridge` against the resolved home.
-pub fn install_bridge(log: &Log) -> Result<(), String> {
-    let spec = crate::features::backend::home_shell_spec()
-        .map_err(|_| "Install Gentle Shell first.".to_string())?;
-    let source = format!("npm:{BRIDGE}");
-    log(format!("Installing {source}…"));
-    run_logged(
-        spec.launcher_command(["install", source.as_str()]),
-        "gentle-shell install",
-        log,
-    )?;
-    crate::features::settings::forget_claude_auth();
-    Ok(())
-}
-
 /// `claude auth status` → signed in?; `None` when Claude Code isn't installed
 /// or doesn't answer.
 pub fn claude_signed_in(claude: &Path) -> Option<bool> {

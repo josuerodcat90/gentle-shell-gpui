@@ -4,13 +4,11 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
-use super::gentle::{bridge_version, install_prefix};
+use super::gentle::bridge_version;
 use super::probe::{
     go_version, os_release_value, output_of, parse_version, run_logged, show_version,
 };
-use super::{
-    Fix, Log, MIN_ENGRAM, MIN_GO, MIN_NODE, Status, fetch, managed_dirs, prefix_bin, refresh_paths,
-};
+use super::{Fix, Log, MIN_ENGRAM, MIN_GO, MIN_NODE, Status, fetch, refresh_paths};
 
 // ── Node.js ────────────────────────────────────────────────────────────────
 
@@ -438,75 +436,6 @@ pub fn check_provider(agent: &Path, claude_login: Option<bool>) -> (Status, Fix)
         );
     }
     (Status::Missing("No provider signed in".into()), Fix::SignIn)
-}
-
-/// `command` for the user's terminal, with the app's own toolchain dirs (and
-/// `also`) on its PATH: the terminal doesn't inherit them. Unix spells the
-/// whole PATH out (no `$PATH`), so sh, bash, zsh and fish all accept it.
-fn in_terminal(command: &str, also: Option<PathBuf>) -> String {
-    let mut dirs = managed_dirs();
-    dirs.extend(also);
-    if dirs.is_empty() {
-        return command.to_string();
-    }
-    if cfg!(windows) {
-        let joined: Vec<String> = dirs.iter().map(|d| d.display().to_string()).collect();
-        return format!("set \"PATH={};%PATH%\" && {command}", joined.join(";"));
-    }
-    for dir in std::env::split_paths(&pi_rpc::child_path()) {
-        if !dirs.contains(&dir) {
-            dirs.push(dir);
-        }
-    }
-    let path = std::env::join_paths(dirs).unwrap_or_default();
-    format!("export PATH='{}' && {command}", path.to_string_lossy())
-}
-
-/// The sign-in only matters with the bridge; without it, it is shown as
-/// waiting on the bridge (no fix) unless Claude Code is already signed in.
-pub fn check_claude_login(
-    agent: &Path,
-    claude: Option<&Path>,
-    signed_in: Option<bool>,
-) -> (Status, Fix) {
-    if signed_in == Some(true) {
-        return (Status::Ok("Signed in".into()), Fix::None);
-    }
-    if bridge_version(agent).is_none() {
-        return (
-            Status::Missing("Install the Claude bridge first".into()),
-            Fix::None,
-        );
-    }
-    match (claude, signed_in) {
-        (Some(_), Some(false)) => (
-            Status::Missing("Not signed in".into()),
-            Fix::Terminal(in_terminal("claude auth login", None)),
-        ),
-        (Some(claude), None) => (
-            Status::Failed(format!("{} doesn't answer `auth status`", claude.display())),
-            Fix::Terminal(in_terminal("claude auth login", None)),
-        ),
-        _ => {
-            let prefix = pi_rpc::find_program("npm").and_then(|npm| install_prefix(&npm));
-            let install = match &prefix {
-                Some(p) if cfg!(windows) => format!(
-                    "npm i -g @anthropic-ai/claude-code --prefix \"{}\"",
-                    p.display()
-                ),
-                Some(p) => format!(
-                    "npm i -g @anthropic-ai/claude-code --prefix '{}'",
-                    p.display().to_string().replace('\'', "'\\''")
-                ),
-                None => "npm i -g @anthropic-ai/claude-code".to_string(),
-            };
-            let bin = prefix.map(|p| prefix_bin(&p, cfg!(windows)));
-            (
-                Status::Missing("Claude Code isn't installed".into()),
-                Fix::Terminal(in_terminal(&format!("{install} && claude auth login"), bin)),
-            )
-        }
-    }
 }
 
 #[cfg(test)]

@@ -33,8 +33,6 @@ pub enum CheckId {
     Provider,
     Git,
     Engram,
-    ClaudeBridge,
-    ClaudeLogin,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -197,16 +195,6 @@ fn meta(id: CheckId) -> (&'static str, &'static str, Need) {
             "Reviews, worktrees, changes and branches.",
             Need::Recommended,
         ),
-        CheckId::ClaudeBridge => (
-            "Claude bridge",
-            "Use a Claude Pro/Max subscription through Claude Code.",
-            Need::Optional,
-        ),
-        CheckId::ClaudeLogin => (
-            "Claude Code sign-in",
-            "The Claude bridge uses Claude Code's own login.",
-            Need::Optional,
-        ),
         CheckId::Engram => (
             "Engram",
             "Long-term memory across sessions.",
@@ -222,15 +210,7 @@ fn check_order(os: &str) -> Vec<CheckId> {
     if os == "windows" {
         ids.push(Go);
     }
-    ids.extend([
-        GentleShell,
-        Setup,
-        Provider,
-        Git,
-        ClaudeBridge,
-        ClaudeLogin,
-        Engram,
-    ]);
+    ids.extend([GentleShell, Setup, Provider, Git, Engram]);
     ids
 }
 
@@ -258,10 +238,6 @@ pub fn run_checks() -> Vec<Check> {
                 CheckId::Setup => gentle::check_setup(&launcher),
                 CheckId::Provider => extras::check_provider(&agent, signed_in),
                 CheckId::Git => extras::check_git(),
-                CheckId::ClaudeBridge => gentle::check_bridge(&agent),
-                CheckId::ClaudeLogin => {
-                    extras::check_claude_login(&agent, claude.as_deref(), signed_in)
-                }
                 CheckId::Engram => extras::check_engram(),
             };
             let (status, fix) = if managed {
@@ -368,10 +344,6 @@ pub fn install(id: CheckId, log: &(dyn Fn(String) + Send + Sync)) -> Result<(), 
         CheckId::Setup => gentle::run_setup(log),
         CheckId::Provider => Err("Sign in from the Providers screen.".into()),
         CheckId::Git => extras::install_git(log),
-        CheckId::ClaudeBridge => gentle::install_bridge(log),
-        CheckId::ClaudeLogin => {
-            Err("Sign in to Claude Code in a terminal: `claude auth login`.".into())
-        }
         CheckId::Engram => extras::install_engram(log),
     };
     refresh_paths();
@@ -411,16 +383,7 @@ mod tests {
 
     #[test]
     fn checks_per_os_in_display_order() {
-        let unix = vec![
-            Node,
-            GentleShell,
-            Setup,
-            Provider,
-            Git,
-            ClaudeBridge,
-            ClaudeLogin,
-            Engram,
-        ];
+        let unix = vec![Node, GentleShell, Setup, Provider, Git, Engram];
         assert_eq!(check_order("macos"), unix);
         assert_eq!(check_order("linux"), unix);
         let windows = check_order("windows");
@@ -434,7 +397,6 @@ mod tests {
         assert_eq!(meta(Provider).2, Need::Required);
         assert_eq!(meta(Git).2, Need::Recommended);
         assert_eq!(meta(Engram).2, Need::Optional);
-        assert_eq!(meta(ClaudeLogin).2, Need::Optional);
     }
 
     #[test]

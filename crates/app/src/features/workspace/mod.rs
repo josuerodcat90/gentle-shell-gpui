@@ -457,6 +457,9 @@ pub struct Workspace {
     /// Pages agents opened in the browser outside the app, so one a tool
     /// keeps printing opens there once.
     opened_outside: std::collections::HashSet<String>,
+    /// The design canvas's opens in the browser outside the app: every new
+    /// open opens a tab, one open only once.
+    canvas_outside: gentle_core::web_browsers::OutsideCanvas,
     /// The docked browser column's divider is being dragged: where the
     /// pointer went down (x), the column's width then, and the room it
     /// shares with the conversation.
@@ -592,6 +595,7 @@ impl Workspace {
             stages: Vec::new(),
             next_stage: 1,
             opened_outside: Default::default(),
+            canvas_outside: Default::default(),
             browser_dock_drag: None,
             browser_dock_room: Default::default(),
             resume_welcome: None,

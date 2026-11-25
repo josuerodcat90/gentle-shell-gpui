@@ -286,6 +286,13 @@ pub enum CanvasNotice {
         url: String,
         refreshed: bool,
     },
+    /// A new `open` of the URL already shown. Gentle Shell sends `open` only
+    /// while no page shows the canvas (a connected page gets `refresh`), so a
+    /// browser tab outside the app was closed and is opened again; the card
+    /// inside the app still holds the page and is left as it is.
+    Reopen {
+        url: String,
+    },
     Stopped,
 }
 

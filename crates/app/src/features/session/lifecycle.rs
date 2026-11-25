@@ -358,6 +358,16 @@ impl SessionView {
         // Agent UI: the extension loads in the app's mode (a change made
         // while it starts is sent once it is ready).
         let genui_mode = crate::features::genui::mode::mode(cx);
+        // Where agents' pages go, as chosen now: a change applies to the tabs
+        // started (or restarted) after it.
+        let env: Vec<(String, String)> = [crate::features::genui::mode::launch_env(genui_mode)]
+            .into_iter()
+            .chain(gentle_core::web_browsers::design_launch_env(
+                crate::features::browser::external::agent_pages(cx),
+                gentle_core::ides::Os::CURRENT,
+                std::env::var_os("WAYLAND_DISPLAY").as_deref(),
+            ))
+            .collect();
         let canvas = self.canvas.clone();
         // The backend chosen when the tab first started: a restart resumes
         // its conversation there, wherever new tabs go now.
@@ -374,12 +384,8 @@ impl SessionView {
                         .map(|file| (crate::features::canvas::AGENT_ENV.to_string(), file))
                         .into_iter()
                         .collect();
-                    let mut spec = crate::features::backend::launch_spec(
-                        &runs_on,
-                        &cwd,
-                        &[crate::features::genui::mode::launch_env(genui_mode)],
-                        &files,
-                    )?;
+                    let mut spec =
+                        crate::features::backend::launch_spec(&runs_on, &cwd, &env, &files)?;
                     if let Some(path) = &resume {
                         // A conversation listed from this computer's view of the
                         // backend's home reads there as the backend's path.

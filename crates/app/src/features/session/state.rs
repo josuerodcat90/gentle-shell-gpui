@@ -3156,10 +3156,11 @@ pub(in crate::features::session) mod desktop {
             /// for the seed, which never closes anything: `Stopped` closes
             /// design cards another tab may own, so only a `stop` event (or an
             /// event with the canvas not running) does. A running canvas opens
-            /// its loopback URL, except the one already shown on a plain
-            /// `open` or seed; a `refresh` always reloads. A running canvas
-            /// without a URL navigates nowhere. Any other URL is refused, and
-            /// the report does not repeat it.
+            /// its loopback URL; the one already shown opens again only on an
+            /// `open` event ([`CanvasNotice::Reopen`]: no page shows it any
+            /// more), never on a seed; a `refresh` always reloads. A running
+            /// canvas without a URL navigates nowhere. Any other URL is
+            /// refused, and the report does not repeat it.
             fn canvas_notice(
                 &mut self,
                 transition: Option<DesignTransition>,
@@ -3183,7 +3184,15 @@ pub(in crate::features::session) mod desktop {
                 }
                 let refreshed = transition == Some(DesignTransition::Refresh);
                 if !refreshed && self.shown.as_deref() == Some(url) {
-                    return Applied::default();
+                    if transition != Some(DesignTransition::Open) {
+                        return Applied::default();
+                    }
+                    return Applied {
+                        notice: Some(CanvasNotice::Reopen {
+                            url: url.to_string(),
+                        }),
+                        ..Applied::default()
+                    };
                 }
                 self.shown = Some(url.to_string());
                 Applied {
@@ -6198,6 +6207,11 @@ mod tests {
         matches!(notice, Some(CanvasNotice::Stopped))
     }
 
+    /// Whether `notice` opens `url` again, without printing it on failure.
+    fn reopens(notice: &Option<CanvasNotice>, url: &str) -> bool {
+        matches!(notice, Some(CanvasNotice::Reopen { url: shown }) if shown == url)
+    }
+
     #[test]
     fn design_seed_asks_once_with_the_url_and_waits_for_pending() {
         let (mut design, mut session) = design_ready(&["design_canvas"]);
@@ -6493,7 +6507,7 @@ mod tests {
     }
 
     #[test]
-    fn design_does_not_reopen_the_url_it_already_shows() {
+    fn design_reopens_the_url_it_already_shows_only_on_a_new_open() {
         let other = "http://127.0.0.1:4100/tok-s3cret/d/pricing/";
         let (mut design, mut session) = design_ready(&["design_canvas"]);
         let seeded = seed_design(
@@ -6503,16 +6517,17 @@ mod tests {
         );
         assert!(opens(&seeded.notice, CANVAS_URL, false));
 
-        // The same URL opened again would only reload the page.
+        // Its page was closed (no client connected), so Gentle Shell sends a
+        // new `open`: a reopen, which the card inside the app leaves alone
+        // and the browser outside the app opens again.
+        let mut closed = canvas_json(true, Some(CANVAS_URL));
+        closed["connectedClients"] = 0.into();
         let again = design.apply(
             &mut session,
-            &desktop_widget(design_event_lines(
-                1,
-                "open",
-                canvas_json(true, Some(CANVAS_URL)),
-            )),
+            &desktop_widget(design_event_lines(1, "open", closed)),
         );
-        assert!(again.notice.is_none() && again.report.is_none());
+        assert!(reopens(&again.notice, CANVAS_URL));
+        assert!(again.report.is_none());
 
         // A refresh is asked for: it still reloads.
         let refreshed = design.apply(
